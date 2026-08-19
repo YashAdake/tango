@@ -1,0 +1,44 @@
+# Secrets — never committed. Local .env is DPAPI-protected on the host.
+.env
+.env.*
+*.secret
+secrets/
+hosts/**/credentials*
+
+# Data & state — the ledger/store never leaves the machine
+*.db
+*.db-wal
+*.db-shm
+data/
+backups/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.uv-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node (surfaces/web, if any)
+node_modules/
+
+# Eval caches & recordings (response cache ships via CI artifacts, not git)
+evals/.cache/
+evals/recordings/
+*.wav
+!evals/fixtures/**/*.wav
+
+# Voice pre-render pack is generated, not sourced
+assets/voice-pack/
+
+# Logs & traces
+*.log
+traces/
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
