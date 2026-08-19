@@ -104,6 +104,10 @@ RULES: tuple[Rule, ...] = (
          "dev_down", resolve_project="project"),
 )
 
+# A model suggestion below this is worth less than an honest question.
+MODEL_MIN_CONFIDENCE = 0.6
+
+
 # Leading conversational filler. Stripped before matching so "ok, actually
 # kill it" routes the same as "kill it" — people do not speak in commands.
 _FILLERS = re.compile(
@@ -155,9 +159,17 @@ class Router:
     """Deterministic first pass. In S0.7 a model slots in behind this same
     interface as a fallback for what the rules do not match."""
 
-    def __init__(self, projects: ProjectRegistry, known_playbooks: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        projects: ProjectRegistry,
+        known_playbooks: set[str] | None = None,
+        model: Any | None = None,
+    ) -> None:
         self.projects = projects
         self.known = known_playbooks or set()
+        self.model = model
+        """Optional T1 fallback. None means rules-only — which is the whole of
+        Phase 0, and remains fully functional forever."""
 
     def route(self, utterance: str, context: dict[str, Any] | None = None) -> Decision:
         text = _strip_fillers(utterance)
@@ -213,8 +225,67 @@ class Router:
 
             return Decision(Route.PLAYBOOK, playbook_id=rule.playbook, params=params)
 
+        return self._model_fallback(text)
+
+    # ------------------------------------------------------------ model tier
+
+    def _model_fallback(self, text: str) -> Decision:
+        """Ask the local model only when the rules found nothing.
+
+        Deliberately last. The deterministic path is faster, reproducible and
+        free; the model exists for phrasings nobody anticipated, not as the
+        default route. Its answer is treated as a *suggestion*: the project it
+        names still goes through the same resolver, so it cannot conjure a
+        target that does not exist (ADR-009).
+        """
+        if self.model is None or not self.known:
+            return Decision(
+                Route.CLARIFY, reason="no_match",
+                message="I don't have a playbook for that yet.",
+                candidates=sorted(self.known),
+            )
+
+        from tango.models import ROUTE_SCHEMA, ROUTE_SYSTEM, ModelUnavailable, build_route_prompt
+
+        try:
+            completion = self.model.complete(
+                build_route_prompt(text, sorted(self.known), self.projects.ids()),
+                system=ROUTE_SYSTEM,
+                schema=ROUTE_SCHEMA,
+            )
+        except ModelUnavailable:
+            # Absence is a state, not an error: say so rather than guessing.
+            return Decision(
+                Route.CLARIFY, reason="no_match_model_offline",
+                message="I don't have a playbook for that, and the local model isn't running.",
+                candidates=sorted(self.known),
+            )
+
+        answer = completion.parsed or {}
+        playbook = str(answer.get("playbook", "none"))
+        confidence = float(answer.get("confidence", 0.0) or 0.0)
+
+        if playbook == "none" or playbook not in self.known or confidence < MODEL_MIN_CONFIDENCE:
+            return Decision(
+                Route.CLARIFY, reason="no_match",
+                message="I don't have a playbook for that yet.",
+                candidates=sorted(self.known), confidence=confidence,
+            )
+
+        params: dict[str, Any] = {}
+        if phrase := str(answer.get("project", "")).strip():
+            try:
+                project = self.projects.resolve(phrase)
+            except (AmbiguousResolution, ResolutionError):
+                return Decision(
+                    Route.CLARIFY, reason="ambiguous_project",
+                    message="Which project did you mean?",
+                    candidates=self.projects.ids(), confidence=confidence,
+                )
+            params["project"] = project.id
+            params["_project"] = project
+
         return Decision(
-            Route.CLARIFY, reason="no_match",
-            message="I don't have a playbook for that yet.",
-            candidates=sorted(self.known),
+            Route.PLAYBOOK, playbook_id=playbook, params=params,
+            confidence=confidence, reason="model",
         )

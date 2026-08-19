@@ -48,7 +48,15 @@ class Core:
         self.playbooks = PlaybookRegistry()
         self.playbooks.load_dir(playbooks)
         self.projects = ProjectRegistry.load(hosts)
-        self.router = Router(self.projects, known_playbooks=set(self.playbooks.names()))
+
+        from tango.models import select_model
+
+        self.model = select_model()
+        self.router = Router(
+            self.projects,
+            known_playbooks=set(self.playbooks.names()),
+            model=self.model if self.model.available() else None,
+        )
 
     def recover(self) -> list[tuple[str, ActionStatus]]:
         """Reconcile interrupted commits before accepting new work."""
@@ -129,6 +137,19 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
         typer.secho(f"[tripwire {signal:.2f}] response reviewed", fg=typer.colors.MAGENTA)
     if run.aborted_at:
         typer.secho(f"(stopped after '{run.aborted_at}')", fg=typer.colors.YELLOW)
+
+
+@app.command()
+def doctor(
+    hosts: Path = typer.Option(Path("hosts"), "--hosts"),
+    playbooks: Path = typer.Option(Path("playbooks"), "--playbooks"),
+    db: Path = typer.Option(Path("data/tango.db"), "--db"),
+    model: str = typer.Option("qwen3:4b", "--model"),
+) -> None:
+    """Validate this machine. Run it first on any new host."""
+    from tango.doctor import report, run_all
+
+    raise typer.Exit(report(run_all(hosts, playbooks, db, model)))
 
 
 @app.command()

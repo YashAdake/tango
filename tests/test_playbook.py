@@ -378,3 +378,68 @@ def test_bulk_mail_forwarding_is_refused(router, utterance):
 ])
 def test_os_and_social_control_is_declined(router, utterance):
     assert router.route(utterance).route is Route.DECLINE
+
+
+# ------------------------------------------------------- model tier (S0.7b)
+
+
+def test_router_without_a_model_still_works(projects):
+    """Absence is a state, not an error. Every playbook runs with no model."""
+    r = Router(projects, known_playbooks={"dev_up"}, model=None)
+    assert r.route("start optiresume").playbook_id == "dev_up"
+    assert r.route("blah blah").route is Route.CLARIFY
+
+
+def test_null_model_degrades_visibly_rather_than_guessing(projects):
+    from tango.models import NullModel
+
+    r = Router(projects, known_playbooks={"dev_up"}, model=NullModel())
+    d = r.route("something nobody anticipated")
+    assert d.route is Route.CLARIFY
+    assert d.reason == "no_match_model_offline"
+
+
+def test_model_suggestion_still_goes_through_the_resolver(projects):
+    """The model may suggest a project; it may not conjure one (ADR-009)."""
+    from tango.models import StubModel
+
+    stub = StubModel(responses={
+        "get the resume thing going": {
+            "playbook": "dev_up", "project": "not-a-real-project",
+            "confidence": 0.9,
+        }
+    })
+
+    r = Router(projects, known_playbooks={"dev_up"}, model=stub)
+    d = r.route("get the resume thing going")
+    assert d.route is Route.CLARIFY
+    assert d.reason == "ambiguous_project"
+
+
+def test_low_confidence_model_answers_are_refused(projects):
+    from tango.models import StubModel
+
+    stub = StubModel(
+        responses={"hmm do the thing": {"playbook": "dev_up", "confidence": 0.2}}
+    )
+
+    r = Router(projects, known_playbooks={"dev_up"}, model=stub)
+    d = r.route("hmm do the thing")
+    assert d.route is Route.CLARIFY, "a weak guess is worth less than a question"
+
+
+def test_rules_win_before_the_model_is_ever_consulted(projects):
+    """The deterministic path is faster, reproducible and free."""
+    from tango.models import StubModel
+
+    class Counting(StubModel):
+        calls: int = 0
+
+        def complete(self, prompt, *, system="", schema=None):
+            type(self).calls += 1
+            return super().complete(prompt, system=system, schema=schema)
+
+    Counting.calls = 0
+    r = Router(projects, known_playbooks={"dev_up"}, model=Counting())
+    r.route("start optiresume")
+    assert Counting.calls == 0
