@@ -18,6 +18,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# Words that carry no identifying information. Matching on these is how
+# "kill the db" ends up resolving to whichever project has "the" in an alias.
+STOPWORDS = frozenset({
+    "the", "a", "an", "my", "our", "this", "that", "it", "its",
+    "of", "for", "to", "and", "or", "on", "in", "please", "app", "server",
+})
+
+# Below this, a match explains too little of the query to act on. The caller
+# gets a question, never a guess.
+MIN_RESOLVE_CONFIDENCE = 0.65
+
+
+def _content_tokens(text: str) -> set[str]:
+    raw = text.replace("-", " ").replace("_", " ").split()
+    return {w for w in raw if w not in STOPWORDS and len(w) > 1}
+
 
 @dataclass(frozen=True)
 class Project:
@@ -30,6 +46,9 @@ class Project:
     health_url: str | None = None
     prod_url: str | None = None
     compose_path: str | None = None
+    compose_file: str | None = None
+    """Non-default compose file, e.g. ``docker-compose.dev.yml``. Real projects
+    rarely use the bare default, and assuming they do starts the wrong stack."""
     compose_service: str | None = None
     container: str | None = None
     deploy_branch: str = "main"
@@ -99,6 +118,7 @@ class ProjectRegistry:
                             health_url=p.get("health_url"),
                             prod_url=p.get("prod_url"),
                             compose_path=p.get("compose_path"),
+                            compose_file=p.get("compose_file"),
                             compose_service=p.get("compose_service"),
                             container=p.get("container"),
                             deploy_branch=p.get("deploy_branch", "main"),
@@ -125,20 +145,26 @@ class ProjectRegistry:
         q = query.strip().lower()
         if not q:
             return []
+        q_tokens = _content_tokens(q)
 
         found: list[Candidate] = []
         for p in self.projects.values():
             names = (p.id.lower(), *(a.lower() for a in p.aliases))
             score = 0.0
             for name in names:
+                name_tokens = _content_tokens(name)
                 if q == name:
                     score = max(score, 1.0)
                 elif name.startswith(q) or q.startswith(name):
                     score = max(score, 0.8)
                 elif q in name or name in q:
-                    score = max(score, 0.6)
-                elif set(q.split()) & set(name.replace("-", " ").replace("_", " ").split()):
-                    score = max(score, 0.4)
+                    score = max(score, 0.7)
+                elif q_tokens and q_tokens & name_tokens:
+                    # Overlap on *content* words only, scaled by how much of the
+                    # query it explains. "the dev server" sharing "the" with
+                    # "the resume thing" must not resolve to a project.
+                    coverage = len(q_tokens & name_tokens) / len(q_tokens)
+                    score = max(score, 0.3 + 0.3 * coverage)
             if score > 0:
                 found.append(Candidate(p.id, p.id, score, p))
         return sorted(found, key=lambda c: (-c.confidence, c.id))
@@ -156,6 +182,9 @@ class ProjectRegistry:
             raise ResolutionError(f"I don't know a project called '{query}'. I know: {known}")
 
         best = ranked[0]
+        if best.confidence < MIN_RESOLVE_CONFIDENCE:
+            # Something matched weakly. That is a question, not an answer.
+            raise AmbiguousResolution(query, ranked[:3])
         rivals = [c for c in ranked[1:] if c.confidence >= best.confidence - 0.01]
         if rivals and best.confidence < 1.0:
             raise AmbiguousResolution(query, [best, *rivals])

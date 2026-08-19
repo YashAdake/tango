@@ -53,6 +53,8 @@ GATES: list[Gate] = [
          "no R2+ tool without a verifier; no dangling compensate"),
     Gate("claims", [PY, "-m", "pytest", "tests/test_render.py", "-q", "-k", "licens or verb"],
          "the honesty guarantee: no unproven completion claim can ship"),
+    Gate("eval", [PY, "evals/run.py", "--all"],
+         "routing accuracy against the golden set — the instrument, not a test"),
 ]
 
 

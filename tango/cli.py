@@ -105,8 +105,11 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
     pb = core.playbooks.get(decision.playbook_id)
     params: dict[str, Any] = dict(decision.params)
     project = params.get("_project")
-    if "has_compose" in {p.name for p in pb.params}:
+    declared = {p.name for p in pb.params}
+    if "has_compose" in declared:
         params["has_compose"] = bool(project and project.compose_path)
+    if "has_dev_cmd" in declared:
+        params["has_dev_cmd"] = bool(project and project.dev_cmd)
 
     task_id = core.executor.new_task(
         goal=text,

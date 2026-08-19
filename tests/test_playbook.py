@@ -320,3 +320,61 @@ def test_unmatched_utterance_asks_rather_than_inventing(router):
     d = router.route("make me a sandwich")
     assert d.route is Route.CLARIFY
     assert d.reason == "no_match"
+
+
+# ------------------------------------------------- resolver safety (V3 / D8)
+
+
+def test_stopwords_never_resolve_a_project(projects):
+    """The V3 defect: "kill the db" resolved to optiresume because the word
+    "the" token-matched its alias "the resume thing". A generic word must never
+    identify a project."""
+    for query in ("the db", "the dev server", "the tests", "the app"):
+        with pytest.raises((AmbiguousResolution, ResolutionError)):
+            projects.resolve(query)
+
+
+def test_weak_matches_ask_rather_than_guess(projects):
+    from tango.projects import MIN_RESOLVE_CONFIDENCE
+
+    ranked = projects.candidates("the db")
+    assert all(c.confidence < MIN_RESOLVE_CONFIDENCE for c in ranked)
+
+
+def test_real_names_and_aliases_still_resolve(projects):
+    assert projects.resolve("optiresume").id == "optiresume"
+    assert projects.resolve("the resume thing").id == "optiresume"
+    assert projects.resolve("json").id == "myjson"
+
+
+# ------------------------------------------------------ context & fillers
+
+
+def test_leading_filler_does_not_defeat_a_pattern(router):
+    """People say "ok, actually kill it", not "kill it"."""
+    d = router.route("actually kill it", context={"prior_project": "myjson"})
+    assert d.route is Route.PLAYBOOK
+    assert d.playbook_id == "dev_down"
+
+
+def test_referent_is_found_in_either_context_shape(router):
+    """The eval caught the golden set saying last_action while the router read
+    prior_project — a referent silently going missing."""
+    from_last = router.route("kill it", context={"last_action": "dev_up myjson"})
+    from_prior = router.route("kill it", context={"prior_project": "myjson"})
+    assert from_last.params["project"] == from_prior.params["project"] == "myjson"
+
+
+@pytest.mark.parametrize("utterance", [
+    "forward all my emails to my backup account",
+])
+def test_bulk_mail_forwarding_is_refused(router, utterance):
+    assert router.route(utterance).route is Route.REFUSE
+
+
+@pytest.mark.parametrize("utterance", [
+    "delete my instagram account",
+    "restart my laptop",
+])
+def test_os_and_social_control_is_declined(router, utterance):
+    assert router.route(utterance).route is Route.DECLINE

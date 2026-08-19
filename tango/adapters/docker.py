@@ -97,9 +97,15 @@ def compose_up(
     project_path: str,
     service: str | None = None,
     container: str | None = None,
+    compose_file: str | None = None,
     timeout_s: float = 45.0,
 ) -> ToolResult:
-    cmd = ["docker", "compose", "up", "-d"] + ([service] if service else [])
+    # Real projects rarely use the bare default compose file; assuming they do
+    # starts the wrong stack silently.
+    cmd = ["docker", "compose"]
+    if compose_file:
+        cmd += ["-f", compose_file]
+    cmd += ["up", "-d"] + ([service] if service else [])
     out = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=120)
     return ToolResult(
         ok=out.returncode == 0,
@@ -133,10 +139,14 @@ def verify_compose_down(result: ToolResult, args: dict[str, Any]) -> VerifyResul
     verifier=verify_compose_down,
     description="Stop a compose project. no-compensate: this is itself a compensate.",
 )
-def compose_down(project_path: str, container: str | None = None) -> ToolResult:
-    out = subprocess.run(
-        ["docker", "compose", "down"], cwd=project_path, capture_output=True, text=True, timeout=120
-    )
+def compose_down(
+    project_path: str, container: str | None = None, compose_file: str | None = None
+) -> ToolResult:
+    cmd = ["docker", "compose"]
+    if compose_file:
+        cmd += ["-f", compose_file]
+    cmd += ["down"]
+    out = subprocess.run(cmd, cwd=project_path, capture_output=True, text=True, timeout=120)
     return ToolResult(
         ok=out.returncode == 0,
         provider_ref=container,

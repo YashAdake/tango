@@ -27,7 +27,8 @@
       "when": "params.has_compose == true",
       "args": {
         "project_path": "${_project.compose_path}",
-        "container": "${_project.container}"
+        "container": "${_project.container}",
+        "compose_file": "${_project.compose_file}"
       },
       "on_fail": "continue"
     }

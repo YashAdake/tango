@@ -181,3 +181,100 @@ Fixed; `B008` scoped narrowly to `cli.py` rather than disabled project-wide.
 - `hosts/default/projects.json` is a starting map, not verified against every project's real dev command — Phase 1 with the daily-jobs list.
 - No `tango stop` yet (see D6).
 - Retry `on_fail` is implemented but only lightly exercised.
+
+---
+
+## V3 — Phase 0, story S0.7 part 1 (eval harness, config from reality)
+
+**Date:** 2026-08-19 · **Verdict:** PASS after 5 fixes · **Gate:** 7/7 green
+**Routing: 27/27 (100%) on measurable rows, all four accuracy gates green**
+
+### Context
+
+The dev machine has no Ollama, no NVIDIA GPU and Docker stopped — so the model
+tier cannot be *measured* here. That is the anticipated split (docs/16 §14.1):
+the model swaps in on the lab laptop behind the router's existing interface.
+What is hardware-independent, and far more valuable right now, is **the
+instrument**. Built it, pointed it at the regex router, and it immediately
+earned its keep.
+
+### What was checked
+
+| Check | Method | Result |
+|---|---|---|
+| Config vs reality | read every project's real `package.json` / compose files | **found 2 defects** |
+| Routing accuracy | new `evals/run.py` over the golden set | **found 3 defects, 8 misses** |
+| Regression | full suite after resolver hardening | pass |
+| Gate | `scripts/verify.py`, now 7 gates | pass |
+
+### Defects found
+
+**D8 · The resolver would act on a stopword — three symptoms, one cause.**
+`"kill the db"`, `"kill the dev server"` and `"run the tests"` all resolved to
+**optiresume**, because the word *"the"* token-matched its alias *"the resume
+thing"* and scored 0.4. The system would have stopped a real project because a
+sentence contained a definite article. This is the single most dangerous defect
+found so far — worse than D4, because D4 did nothing while this one acts on the
+wrong target.
+
+*Fix:* stopword list excluded from token matching; overlap scored by how much of
+the query it actually explains; and a hard `MIN_RESOLVE_CONFIDENCE = 0.65` floor
+below which `resolve()` raises rather than returning a guess. Verified: all
+three now ask; real names and aliases still resolve.
+
+**D9 · Guessed config, wrong config.** `hosts/default/projects.json` was written
+from assumption. Reality: optiresume uses `docker-compose.dev.yml` (not the
+default file) with container `optiresume-dev-db` (not `optiresume-db-1`), and
+the `Project` model had **no field for a non-default compose file** — so the
+playbook would have quietly brought up the wrong stack.
+
+*Fix:* added `compose_file`, wired through loader, adapter and both playbooks;
+config rewritten from each project's actual files. Also added a `has_dev_cmd`
+guard so a static site (portfolio) opens the editor and does not try to start a
+dev server that does not exist.
+
+**D10 · Context schema mismatch between the golden set and the router.** The
+eval provided `last_action: "dev_up myjson"`; the router only read
+`prior_project`. So `"actually kill it"` lost its referent and asked a
+needless question.
+
+*Fix:* `_prior_project()` accepts either shape. This is a seam defect the
+integration tests could not see, because both sides were internally consistent.
+
+**D11 · Missing refusal and decline coverage.** Bulk mail forwarding, social
+account deletion and OS-level reboot all fell through to "I don't have a
+playbook" — technically safe, but the wrong answer, and refusal correctness has
+a 100% gate for a reason.
+
+**D12 · Conversational filler defeated matching.** `"actually kill it"` did not
+match because of one leading word. People do not speak in commands. Fixed with a
+filler-stripping pass; also added minimal Hinglish verb forms (`chalu kar de`,
+`band kar do`), taking `hi-en` from 2/3 to 2/2 measurable.
+
+### Judgement calls worth recording
+
+- `g016 "kill the dev server"` expects resolution to *whatever is running*. That
+  needs ledger-backed tracking of what Tango started — the same feature as
+  `tango stop` (D6). Tagged **phase 1** rather than contorting the router, and
+  the harness now honours `phase` tags as deferred rather than failed.
+- The harness reports **not-yet-built separately from failed**. Counting unbuilt
+  capabilities as failures buries real regressions in noise; counting them as
+  passes is a lie. 34 of 61 rows are currently deferred, and saying so plainly
+  is the honest reading of "100%".
+
+### Spec conformance
+
+| AC | Status |
+|---|---|
+| Golden set exists before the model (S0.1) | ✅ 61 rows, drafted, owner pass pending |
+| Corpus/holdout split, gates on holdout (docs/17 C3) | ✅ deterministic hash split; owner rows weighted toward holdout |
+| Routing ≥95%, refusal 100%, clarify ≥85% | ✅ 100% across all four categories, measurable rows |
+| Eval is a CI gate | ✅ added as the 7th gate in `scripts/verify.py` |
+
+### Known gaps
+
+- **Model tier unbuilt** — needs the lab laptop. The router interface it will inherit is already fixed, so the swap touches nothing downstream.
+- **Only 27 of 61 rows measurable** until more playbooks land (Phase 1).
+- **Golden set is still Claude-drafted.** The 100% is against *my* guesses at your phrasing. The number only becomes meaningful after the owner edit pass — that is the point of weighting owner rows toward the holdout.
+- Compose path still untested end-to-end (Docker down here).
+- No `tango stop` yet (D6, carried from V2).

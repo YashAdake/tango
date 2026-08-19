@@ -1,5 +1,5 @@
 {
-  "_comment": "Host-aware project registry. Copy this to hosts/<hostname>/projects.json and edit. Never put secrets here.",
+  "_comment": "Host-aware project registry. Copy to hosts/<hostname>/projects.json and edit. Never put secrets here. Values below were read from each project's real package.json / docker-compose files, not assumed.",
   "projects": [
     {
       "id": "optiresume",
@@ -11,8 +11,9 @@
       "health_url": "http://localhost:8000/health",
       "prod_url": "https://optiresume.in",
       "compose_path": "d:/my/optiresume",
+      "compose_file": "docker-compose.dev.yml",
       "compose_service": "db",
-      "container": "optiresume-db-1",
+      "container": "optiresume-dev-db",
       "deploy_branch": "prod"
     },
     {
@@ -44,7 +45,7 @@
     {
       "id": "portfolio",
       "path": "d:/my/Yash-Adake_Portfolio",
-      "stack": "static + Cloudflare Worker",
+      "stack": "static site + Cloudflare Worker",
       "aliases": ["site", "personal site", "yashadake"],
       "prod_url": "https://yashadake.com",
       "deploy_branch": "V3.0.0.0"

@@ -64,6 +64,8 @@ REFUSALS: tuple[tuple[re.Pattern[str], str, str], ...] = (
      "Confirmation policy is a config edit, not a request."),
     (re.compile(r"\bwipe\b.*\b(workspace|everything|all)\b", re.I),
      "R4_destructive", "That's too broad and irreversible for me to run."),
+    (re.compile(r"\bforward\b.*\b(all|every)\b.*\b(mail|email|message)", re.I),
+     "R4_bulk", "Bulk-forwarding your mail isn't something I'll set up."),
 )
 
 OUT_OF_SCOPE: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -71,6 +73,11 @@ OUT_OF_SCOPE: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bbook\b.*\b(cab|taxi|flight|ticket)\b", re.I), "out_of_scope"),
     (re.compile(r"\bbank\s+balance\b|\btransfer\b.*\bmoney\b", re.I), "financial_never"),
     (re.compile(r"\bpost\b.*\b(linkedin|twitter|instagram)\b", re.I), "v1_drafts_only"),
+    (re.compile(r"\b(delete|close|deactivate)\b.*\b(instagram|twitter|facebook|"
+                r"linkedin|google|social)\b.*\baccount\b", re.I), "out_of_scope"),
+    (re.compile(r"\b(restart|reboot|shut\s*down|sleep|hibernate)\b\s+"
+                r"(my\s+|the\s+)?(laptop|machine|computer|pc|windows)\b", re.I),
+     "no_playbook_v1"),
 )
 
 RULES: tuple[Rule, ...] = (
@@ -88,7 +95,55 @@ RULES: tuple[Rule, ...] = (
                     r"(?:the\s+)?(?:state|status)\s+of\s+everything\s*\??\s*$", re.I),
          "status_all"),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?status\s*$", re.I), "status_all"),
+    # Hinglish: "<project> chalu kar de", "<project> band kar do".
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?P<project>.+?)\s+"
+                    r"(?:chalu|start)\s+kar\s*(?:de|do|dijiye)?\s*$", re.I),
+         "dev_up", resolve_project="project"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?P<project>.+?)\s+"
+                    r"(?:band|bandh|stop)\s+kar\s*(?:de|do|dijiye)?\s*$", re.I),
+         "dev_down", resolve_project="project"),
 )
+
+# Leading conversational filler. Stripped before matching so "ok, actually
+# kill it" routes the same as "kill it" — people do not speak in commands.
+_FILLERS = re.compile(
+    r"^\s*(?:(?:ok|okay|so|right|now|then|actually|hey|please|"
+    r"can you|could you|i want to|i need to|let's|lets)[,\s]+)+",
+    re.I,
+)
+
+
+def _strip_fillers(text: str) -> str:
+    previous = None
+    current = text.strip()
+    while previous != current:
+        previous = current
+        current = _FILLERS.sub("", current).strip()
+    return current
+
+
+def _prior_project(context: dict[str, Any]) -> str | None:
+    """Find what "it" refers to.
+
+    Conversation context arrives in more than one shape — an explicit
+    ``prior_project``, or the tail of a ``last_action`` like "dev_up myjson".
+    Accepting only one shape is how a referent silently goes missing and a
+    perfectly clear follow-up turns into a needless question. (The eval caught
+    exactly that: the golden set said ``last_action``, the router read
+    ``prior_project``, and "actually kill it" lost its referent.)
+    """
+    if not context:
+        return None
+    if prior := context.get("prior_project"):
+        return str(prior)
+    if prior := context.get("prior"):
+        return str(prior)
+    if last := context.get("last_action"):
+        parts = str(last).split()
+        if len(parts) >= 2:
+            return parts[-1]
+    return None
+
 
 # Utterances that name no target and have no prior context.
 NEEDS_TARGET = re.compile(
@@ -105,7 +160,7 @@ class Router:
         self.known = known_playbooks or set()
 
     def route(self, utterance: str, context: dict[str, Any] | None = None) -> Decision:
-        text = utterance.strip()
+        text = _strip_fillers(utterance)
         context = context or {}
         if not text:
             return Decision(Route.CLARIFY, reason="empty", message="I didn't catch that.")
@@ -123,7 +178,7 @@ class Router:
 
         if m := NEEDS_TARGET.match(text):
             verb = m.group(1).lower()
-            prior = context.get("prior_project")
+            prior = _prior_project(context)
             if prior:
                 pb = "dev_down" if verb in ("stop", "kill") else "dev_up"
                 return Decision(Route.PLAYBOOK, playbook_id=pb, params={"project": prior},

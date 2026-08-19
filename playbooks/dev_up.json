@@ -17,6 +17,11 @@
       "type": "bool",
       "required": false,
       "default": false
+    },
+    "has_dev_cmd": {
+      "type": "bool",
+      "required": false,
+      "default": false
     }
   },
   "steps": [
@@ -28,7 +33,8 @@
       "args": {
         "project_path": "${_project.compose_path}",
         "service": "${_project.compose_service}",
-        "container": "${_project.container}"
+        "container": "${_project.container}",
+        "compose_file": "${_project.compose_file}"
       },
       "on_fail": "abort"
     },
@@ -40,7 +46,8 @@
         "cmd": "${_project.dev_cmd}",
         "cwd": "${_project.path}"
       },
-      "on_fail": "continue"
+      "on_fail": "continue",
+      "when": "params.has_dev_cmd == true"
     },
     {
       "id": "editor",
