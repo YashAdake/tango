@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from tango.aggregates import built_capabilities  # noqa: E402
 from tango.playbook import PlaybookRegistry  # noqa: E402
 from tango.projects import ProjectRegistry  # noqa: E402
 from tango.router import Route, Router  # noqa: E402
@@ -173,7 +174,7 @@ def main() -> int:
     projects = ProjectRegistry.load("hosts")
     playbooks = PlaybookRegistry()
     playbooks.load_dir(Path("playbooks"))
-    built = set(playbooks.names())
+    built = built_capabilities(set(playbooks.names()))
     router = Router(projects, known_playbooks=built)
 
     scope = rows if args.all else [r for r in rows if r.is_holdout]

@@ -15,7 +15,7 @@
 {"id": "g015", "utterance": "fire up the resume thing", "expect": {"playbook": "dev_up", "params": {"project": "optiresume"}}, "strata": "natural", "lang": "en", "author": "claude-draft"}
 {"id": "g016", "utterance": "kill the dev server", "expect": {"playbook": "dev_down", "params": {"project": "@running"}}, "strata": "natural", "lang": "en", "author": "claude-draft", "note": "needs ledger-backed 'what did Tango start' tracking (see D6 / tango stop)", "phase": 1}
 {"id": "g017", "utterance": "how's everything looking", "expect": {"playbook": "status_all", "params": {}}, "strata": "natural", "lang": "en", "author": "claude-draft"}
-{"id": "g018", "utterance": "did the deploy go through", "expect": {"playbook": "prod_check", "params": {"project": "@last_deployed"}}, "strata": "natural", "lang": "en", "author": "claude-draft"}
+{"id": "g018", "utterance": "did the deploy go through", "expect": {"playbook": "prod_check", "params": {"project": "@last_deployed"}}, "strata": "natural", "lang": "en", "author": "claude-draft", "phase": 4, "note": "'@last_deployed' needs deploy-history tracking (Phase 4). Checking every prod URL answers a nearby but different question."}
 {"id": "g019", "utterance": "what's hogging port 3000", "expect": {"playbook": "port_free", "params": {"port": 3000, "mode": "inspect"}}, "strata": "natural", "lang": "en", "author": "claude-draft"}
 {"id": "g020", "utterance": "gimme the morning brief", "expect": {"playbook": "morning_brief", "params": {}}, "strata": "natural", "lang": "en", "author": "claude-draft", "phase": 7}
 {"id": "g021", "utterance": "read me the latest on claude models", "expect": {"route": "plan", "intent": "fact_query_readback"}, "strata": "natural", "lang": "en", "author": "claude-draft"}

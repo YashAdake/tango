@@ -7,20 +7,22 @@ this is a real integration surface rather than a debugging shortcut.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import typer
 
+from tango.aggregates import built_capabilities, is_aggregate, run_aggregate
 from tango.executor import Executor
-from tango.ledger import Ledger
+from tango.ledger import Evidence, Ledger, ToolResult, VerifyResult
 from tango.playbook import PlaybookRegistry, run_playbook
 from tango.projects import ProjectRegistry
-from tango.render import false_success_signal, render_task
+from tango.render import StepOutcome, false_success_signal, render_task
 from tango.router import Route, Router
 from tango.store import Store
-from tango.types import ActionStatus, PrivacyClass
+from tango.types import ActionStatus, PrivacyClass, Risk, TaskStatus, VerifyStatus
 
 # The Windows console defaults to cp1252 and cannot encode the typographic
 # characters used throughout Tango's output. Found in V1 verification; the same
@@ -40,6 +42,7 @@ class Core:
         self.ledger = Ledger(self.store)
 
         import tango.adapters.docker  # noqa: F401
+        import tango.adapters.inspect  # noqa: F401
         import tango.adapters.system  # noqa: F401
         from tango.tools import REGISTRY
 
@@ -54,7 +57,7 @@ class Core:
         self.model = select_model()
         self.router = Router(
             self.projects,
-            known_playbooks=set(self.playbooks.names()),
+            known_playbooks=built_capabilities(set(self.playbooks.names())),
             model=self.model if self.model.available() else None,
         )
 
@@ -110,6 +113,23 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
         raise typer.Exit(1)
 
     assert decision.playbook_id is not None
+
+    # Aggregate reads compute over the whole workspace rather than sequencing
+    # tool calls; they record one ledger action, not twenty (tango/aggregates.py).
+    if decision.playbook_id == "shutdown_all":
+        ctx.invoke(stop, ctx=ctx, pid=None)
+        return
+
+    if is_aggregate(decision.playbook_id):
+        agg_params = dict(decision.params)
+        if "port" in agg_params:
+            agg_params["port"] = int(agg_params["port"])
+        result = run_aggregate(
+            decision.playbook_id, core.projects, agg_params, core.ledger, core.executor
+        )
+        typer.echo(result.text)
+        return
+
     pb = core.playbooks.get(decision.playbook_id)
     params: dict[str, Any] = dict(decision.params)
     project = params.get("_project")
@@ -150,6 +170,75 @@ def doctor(
     from tango.doctor import report, run_all
 
     raise typer.Exit(report(run_all(hosts, playbooks, db, model)))
+
+
+@app.command()
+def status(
+    ctx: typer.Context,
+    prod: bool = typer.Option(True, "--prod/--no-prod", help="Probe production URLs"),
+) -> None:
+    """What's the state of everything."""
+    from tango.status import collect, render
+
+    core = _core(ctx)
+    snapshot = collect(core.projects, check_prod=prod)
+
+    task_id = core.executor.new_task(goal="status of everything", surface="cli", route="status")
+    action_id = core.ledger.propose(
+        task_id=task_id, step_id="collect", tool="status.collect",
+        args={"prod": prod}, risk=Risk.R0_READ,
+    )
+    core.ledger.commit(
+        action_id,
+        executor=lambda: ToolResult(ok=True, raw=json.dumps(snapshot.as_dict()),
+                                    summary=f"{len(snapshot.projects)} projects observed"),
+        verifier=lambda r: VerifyResult(
+            VerifyStatus.VERIFIED, [Evidence("snapshot", r.raw)], "observed"
+        ),
+    )
+    core.executor.settle_task(task_id)
+
+    typer.echo(render(snapshot))
+
+
+@app.command()
+def running(ctx: typer.Context) -> None:
+    """Processes Tango started that are still alive."""
+    from tango.cleanup import started_processes
+
+    core = _core(ctx)
+    procs = started_processes(core.store)
+    if not procs:
+        typer.echo("Nothing that I started is still running.")
+        return
+    for proc in procs:
+        typer.echo(f"  {proc.label}   started {proc.started_at[:19]}")
+
+
+@app.command()
+def stop(
+    ctx: typer.Context,
+    pid: list[int] = typer.Option(None, "--pid", help="Limit to specific pids"),
+) -> None:
+    """Stop the processes Tango started, verifying each one."""
+    from tango.cleanup import stop_all
+
+    core = _core(ctx)
+    results = stop_all(core.store, core.ledger, core.executor, pids=list(pid) if pid else None)
+    if not results:
+        typer.echo("Nothing that I started is still running.")
+        return
+
+    steps = [
+        StepOutcome(label=proc.label, status=status, detail="")
+        for proc, status in results
+    ]
+    task_status = (
+        TaskStatus.COMPLETED
+        if all(s.status is ActionStatus.VERIFIED for s in steps)
+        else TaskStatus.PARTIAL
+    )
+    typer.echo(render_task(steps, task_status))
 
 
 @app.command()

@@ -95,6 +95,37 @@ RULES: tuple[Rule, ...] = (
                     r"(?:the\s+)?(?:state|status)\s+of\s+everything\s*\??\s*$", re.I),
          "status_all"),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?status\s*$", re.I), "status_all"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?how'?s?\s+everything(\s+looking)?\s*\??\s*$", re.I),
+         "status_all"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?:is|are)\s+prod(uction)?\s+"
+                    r"(?:ok|up|healthy|fine|good)\s*\??\s*$", re.I),
+         "prod_check", static={"project": "*"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?prod(uction)?\s+(?:status|check)\s*$", re.I),
+         "prod_check", static={"project": "*"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?prod\s+theek\s+chal\s+raha\s+hai(\s+na)?\s*\??\s*$",
+                    re.I),
+         "prod_check", static={"project": "*"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?what\s+did\s+i\s+ship\s+"
+                    r"(?:this\s+week|lately|recently)\s*\??\s*$", re.I),
+         "git_digest", static={"since": "7d"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?what\s+did\s+i\s+ship\s+today\s*\??\s*$", re.I),
+         "git_digest", static={"since": "1d"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?aaj\s+kya\s+kya\s+ship\s+kiya(\s+maine)?\s*\??\s*$",
+                    re.I),
+         "git_digest", static={"since": "1d"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?:what'?s?\s+)?(?:hogging|holding|on|using)\s+"
+                    r"port\s+(?P<port>\d+)\s*\??\s*$", re.I),
+         "port_free", static={"mode": "inspect"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?port\s+(?P<port>\d+)\s+pe\s+kaun\s+"
+                    r"baitha\s+hai(\s+\w+)?\s*\??\s*$", re.I),
+         "port_free", static={"mode": "inspect"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?free\s+(?:up\s+)?port\s+(?P<port>\d+)\s*$", re.I),
+         "port_free", static={"mode": "kill"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?sab\s+kuch\s+"
+                    r"(?:band|bandh)\s+kar\s*(?:de|do|dijiye)?\s*$", re.I), "shutdown_all"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?did\s+the\s+deploy\s+"
+                    r"(?:go\s+through|work|succeed)\s*\??\s*$", re.I),
+         "prod_check", static={"project": "*"}),
     # Hinglish: "<project> chalu kar de", "<project> band kar do".
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?P<project>.+?)\s+"
                     r"(?:chalu|start)\s+kar\s*(?:de|do|dijiye)?\s*$", re.I),
@@ -207,7 +238,9 @@ class Router:
                 continue
 
             params: dict[str, Any] = dict(rule.static)
-            params.update({k: v for k, v in m.groupdict().items() if v})
+            params.update(
+                {k: (int(v) if v.isdigit() else v) for k, v in m.groupdict().items() if v}
+            )
 
             if rule.resolve_project and rule.resolve_project in params:
                 try:

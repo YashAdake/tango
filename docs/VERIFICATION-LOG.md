@@ -278,3 +278,102 @@ filler-stripping pass; also added minimal Hinglish verb forms (`chalu kar de`,
 - **Golden set is still Claude-drafted.** The 100% is against *my* guesses at your phrasing. The number only becomes meaningful after the owner edit pass — that is the point of weighting owner rows toward the holdout.
 - Compose path still untested end-to-end (Docker down here).
 - No `tango stop` yet (D6, carried from V2).
+
+---
+
+## V4 — Phase 1 part 1 (aggregate reads, status, ledger-driven cleanup)
+
+**Date:** 2026-08-19 · **Verdict:** PASS after 4 fixes · **Gate:** 7/7 green
+**Routing: 38/38 (100%) measurable — up from 27; Hinglish 6/6**
+
+### What landed
+
+Eight R0 inspection tools (git state, git log, port, http probe, docker ps,
+process find), the cross-project status snapshot, four aggregate capabilities
+(`status_all`, `prod_check`, `git_digest`, `port_free`), `shutdown_all`, and
+`tango stop` / `tango running`.
+
+Measurable golden-set rows went 27 → 38 because the capabilities those rows
+reference now exist.
+
+### Real-data confirmation
+
+Run against the actual workspace, not fixtures:
+
+```
+5 projects
+  airdraw     dev clean · prod ok 327ms
+  filesflow   master (40 uncommitted)
+  myjson      yaui/myjson-worldclass clean · prod ok 78ms
+  optiresume  dev clean · optiresume-dev-db: not running · prod ok 140ms
+  portfolio   V3.0.0.0 clean · prod ok 328ms
+  (Docker is not running — container state unknown, not assumed empty.)
+```
+
+Real branches, real uncommitted counts, four live production probes. And the
+full lifecycle closed: `start myjson` → `running` shows the pid → `shut
+everything down` stops it → ledger holds `process.start VERIFIED` followed by
+`process.stop VERIFIED · process 19824 is gone`.
+
+### Defects found
+
+**D13 · "I didn't look" reported as "it's broken".** With `--no-prod`,
+`prod_status` was empty, and `needs_attention` tested `not
+prod_status.startswith("2")` — so *every* project with a production URL was
+flagged as needing attention when production had simply not been probed.
+
+The same dishonesty the ledger exists to prevent, wearing a different costume:
+absence of evidence presented as evidence of failure. *Fix:* explicit
+`prod_checked` flag; the renderer says **"prod not checked"** rather than
+implying a verdict.
+
+**D14 · Two definitions of "what's built".** The CLI knew about aggregates; the
+eval harness only read the playbooks directory. So four working capabilities
+were reported as "not built yet" and 11 rows stayed unmeasurable while passing
+in reality.
+
+*Fix:* `built_capabilities()` as the single source, used by router, CLI and
+harness. A second definition of a shared fact is how a working capability gets
+reported as missing — and how the reverse would eventually happen too.
+
+**D15 · Numeric params arrived as strings.** Regex groups are always strings, so
+`port 3000` produced `"3000"`. A param the contract types as a number must *be*
+a number, or comparisons and arithmetic quietly do the wrong thing downstream.
+*Fix:* digit-only groups coerce to `int` at capture.
+
+**D16 · The router was editorialising params.** It emitted `"7 days ago"` —
+human phrasing baked into a parameter. Params should carry canonical values
+(`"7d"`); translating to what git understands is the capability's job. *Fix:*
+`_as_git_window()` in the aggregate; router emits canonical forms.
+
+### Judgement calls
+
+- **Aggregates record one ledger action, not twenty.** `status_all` performs
+  ~20 observations; recording each as an action would bury the audit trail that
+  consequential actions depend on. One row, full observation as evidence.
+- **`port_free` does not kill anything.** Freeing a port terminates a process —
+  an R1 action deserving its own verified step, not a side effect of a question.
+  It reports the holder and points at `tango stop`.
+- **`g018 "did the deploy go through"` tagged phase 4.** It expects
+  `@last_deployed`, which needs deploy-history tracking. Probing every prod URL
+  answers a nearby but different question, so the row is deferred rather than
+  the implementation contorted to pass it.
+- **Only `VERIFIED` starts are stoppable.** Killing a PID we cannot prove we own
+  is exactly the confident-wrong-action the design exists to prevent.
+
+### Spec conformance
+
+| AC | Status |
+|---|---|
+| D6 closed — `tango stop` from ledger history, not remembered PIDs | ✅ survives a Store reopen; tested |
+| Flagship status read (FR-P1) | ✅ real data, ~3 s, concurrent prod probes |
+| Cross-repo digest (FR-P4) | ✅ 45 commits found across the workspace |
+| Reads are R0, no confirmation | ✅ enforced in `run_aggregate` |
+| Status text carries no completion verbs | ✅ asserted by test |
+
+### Known gaps
+
+- `dev_switch`, `uncommitted_sweep`, `open_app`, timers/alarms still unbuilt — 23 rows deferred.
+- Compose path still unexercised end-to-end (Docker down on this machine).
+- Golden set remains Claude-drafted; 100% is against my guesses at the owner's phrasing.
+- `git_digest` reads only default-branch history; per-branch digests not considered yet.
