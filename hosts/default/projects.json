@@ -1,0 +1,53 @@
+{
+  "_comment": "Host-aware project registry. Copy this to hosts/<hostname>/projects.json and edit. Never put secrets here.",
+  "projects": [
+    {
+      "id": "optiresume",
+      "path": "d:/my/optiresume",
+      "stack": "FastAPI + Next.js 14 + Postgres",
+      "aliases": ["opti", "resume", "the resume thing"],
+      "dev_cmd": "npm run dev",
+      "dev_cwd": "d:/my/optiresume/frontend",
+      "health_url": "http://localhost:8000/health",
+      "prod_url": "https://optiresume.in",
+      "compose_path": "d:/my/optiresume",
+      "compose_service": "db",
+      "container": "optiresume-db-1",
+      "deploy_branch": "prod"
+    },
+    {
+      "id": "myjson",
+      "path": "d:/my/myjson",
+      "stack": "Next.js 14 + Monaco",
+      "aliases": ["json", "json tools"],
+      "dev_cmd": "npm run dev",
+      "prod_url": "https://myjson.yashadake.com",
+      "deploy_branch": "main"
+    },
+    {
+      "id": "airdraw",
+      "path": "d:/my/airdraw",
+      "stack": "Next.js 15 + MediaPipe",
+      "aliases": ["draw", "air draw"],
+      "dev_cmd": "npm run dev",
+      "prod_url": "https://airdraw.yashadake.com",
+      "deploy_branch": "main"
+    },
+    {
+      "id": "filesflow",
+      "path": "d:/my/filesflow",
+      "stack": "in-browser file toolkit",
+      "aliases": ["files", "file flow"],
+      "dev_cmd": "npm run dev",
+      "deploy_branch": "main"
+    },
+    {
+      "id": "portfolio",
+      "path": "d:/my/Yash-Adake_Portfolio",
+      "stack": "static + Cloudflare Worker",
+      "aliases": ["site", "personal site", "yashadake"],
+      "prod_url": "https://yashadake.com",
+      "deploy_branch": "V3.0.0.0"
+    }
+  ]
+}

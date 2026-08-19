@@ -1,0 +1,35 @@
+{
+  "id": "dev_down",
+  "version": 1,
+  "description": "Stop a project's development environment.",
+  "risk": "R1_REVERSIBLE",
+  "params": {
+    "project": {
+      "type": "ProjectId",
+      "required": true,
+      "resolver": "resolve_project"
+    },
+    "_project": {
+      "type": "Project",
+      "required": true
+    },
+    "has_compose": {
+      "type": "bool",
+      "required": false,
+      "default": false
+    }
+  },
+  "steps": [
+    {
+      "id": "compose",
+      "tool": "docker.compose_down",
+      "label": "Containers",
+      "when": "params.has_compose == true",
+      "args": {
+        "project_path": "${_project.compose_path}",
+        "container": "${_project.container}"
+      },
+      "on_fail": "continue"
+    }
+  ]
+}

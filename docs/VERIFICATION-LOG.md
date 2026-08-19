@@ -93,3 +93,91 @@ Date · Verdict · Gate result
 ### Spec conformance      (AC table from docs/16 §14.2)
 ### Known gaps            (deliberate, with the phase that closes them)
 ```
+
+---
+
+## V2 — Phase 0, story S0.6 (playbook engine, router, resolvers, CLI)
+
+**Date:** 2026-08-19 · **Verdict:** PASS after 4 fixes · **Gate:** 6/6 green
+
+### What was checked
+
+| Check | Method | Result |
+|---|---|---|
+| Playbook semantics | 20 unit tests: guards, substitution, binding, on_fail | pass |
+| Router behaviour | 15 unit tests incl. every refusal pattern | **found 1 defect** |
+| Resolvers | exact / alias / ambiguous / unknown | pass |
+| **Real execution** | CLI run against the actual machine, real OS and Docker | **found 2 defects** |
+| Adapters vs reality | first ever non-fake execution (V1 flagged this as open risk) | **works** |
+| Full gate | `scripts/verify.py` | **found 1 defect** |
+
+### The headline: the adapters work, and the honesty guarantee held under real failure
+
+First genuine execution outside fakes. `tango do start myjson` started a dev
+server (PID 23980) and **independently verified it in the OS process table**,
+then launched and verified the editor.
+
+Then `tango do start optiresume` hit a real failure — Docker Desktop was not
+running — and produced:
+
+```
+Database — failed: compose up failed: unable to get image 'postgres:16-alpine':
+failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
+Nothing further ran.
+(stopped after 'db')
+```
+
+It did not say "started your dev environment". `on_fail: abort` stopped the run,
+the task settled `PARTIAL`, and the sentence carried the provider's actual error.
+That is the whole thesis, working on its first contact with reality.
+
+### Defects found
+
+**D4 · A step silently never ran.** `has_compose` was not a declared playbook
+parameter, so the CLI stripped it, so the guard `params.has_compose == true`
+evaluated false, so the **database step vanished from every run** — while the
+task still reported `COMPLETED`. The most dangerous defect found so far: no
+error, no warning, a confident success message, and a service that never started.
+
+*Fix:* `evaluate_when` now **raises** when a guard references an undeclared
+parameter. A guard that quietly evaluates false is a step that silently never
+runs, which is precisely what this system exists not to do. (The docstring
+warning against this was written before the code that did it.)
+
+**D5 · Router missed a natural phrasing.** `"shut everything down"` did not
+match — the pattern allowed `shut everything` but not the trailing particle.
+English puts it either side of the object.
+
+*Fix:* pattern accepts both orders, longest alternatives first so `shut` cannot
+swallow `shut down`. Verified across six phrasings; single-project stop still
+routes to `dev_down`.
+
+**D6 · An incidental side effect during testing.** The first real run started a
+dev server on the workspace machine that nothing was tracking. Stopped via
+`process.stop` with verification.
+
+*Note for later:* Tango starts real processes. Phase 1 needs a `tango stop` that
+uses ledger history to find what it started, rather than the operator
+remembering PIDs.
+
+**D7 · Gate caught lint/type drift** across the four new modules (import order,
+`Any` leakage through guard returns, a `typer` idiom conflicting with `B008`).
+Fixed; `B008` scoped narrowly to `cli.py` rather than disabled project-wide.
+
+### Spec conformance (docs/16 §14.2, S0.6)
+
+| AC | Status |
+|---|---|
+| Regex router, no model in the path | ✅ zero model calls; the model's interface is already the one it will inherit |
+| `dev_up` playbook end-to-end | ✅ verified per-step against the real OS |
+| PARTIAL demonstrated by a failing step | ✅ demonstrated by a *real* failure, not a simulated one |
+| Refusals never fall through to a playbook | ✅ refusals evaluated first; `"take prod down"` also matches a stop pattern and is still refused |
+| Capability freeze can see the tool set up front | ✅ `Playbook.tool_names()` before execution |
+
+### Known gaps — deliberate, tracked
+
+- `status_all` and `shutdown_all` route but have no playbook yet — Phase 1.
+- Compose path untested end-to-end because Docker was down; retest when it runs.
+- `hosts/default/projects.json` is a starting map, not verified against every project's real dev command — Phase 1 with the daily-jobs list.
+- No `tango stop` yet (see D6).
+- Retry `on_fail` is implemented but only lightly exercised.
