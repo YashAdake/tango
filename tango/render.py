@@ -121,12 +121,25 @@ def render_task(steps: list[StepOutcome], task_status: TaskStatus) -> str:
     parts = [render_step(s) for s in steps]
     body = " · ".join(parts)
 
+    # Task-level commentary must contain no completion verbs at all: it describes
+    # the *shape* of the outcome, and a verb here would be a claim no single
+    # action backs. (An earlier draft said "Stopped there." — which reads as an
+    # effect on the world and tripped the checker. Correctly.)
+    suffix = ""
     if task_status is TaskStatus.PARTIAL:
         good = sum(1 for s in steps if s.status is ActionStatus.VERIFIED)
-        return f"{body}\n({good} of {len(steps)} confirmed — the rest are above.)"
-    if task_status is TaskStatus.FAILED:
-        return f"{body}\nStopped there."
-    return body
+        suffix = f"\n({good} of {len(steps)} confirmed — the rest are above.)"
+    elif task_status is TaskStatus.FAILED:
+        suffix = "\nNothing further ran."
+
+    if suffix:
+        offenders = sorted(set(_WORD.findall(suffix.lower())) & COMPLETION_VERBS)
+        if offenders:
+            raise ClaimViolation(
+                f"task-level commentary asserts {offenders}, which no single "
+                f"action backs: {suffix!r}"
+            )
+    return body + suffix
 
 
 # ---------------------------------------------------------- factual grounding
