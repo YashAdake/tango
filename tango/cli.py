@@ -87,6 +87,10 @@ def main(
             f"Reconciled {len(settled)} interrupted action(s) from a previous run.",
             fg=typer.colors.YELLOW,
         )
+
+    for pending, outcome in core.executor.tick():
+        typer.secho(f"[due] {pending.label}: {outcome.status}", fg=typer.colors.CYAN)
+
     ctx.obj = core
 
 
@@ -239,6 +243,60 @@ def stop(
         else TaskStatus.PARTIAL
     )
     typer.echo(render_task(steps, task_status))
+
+
+@app.command()
+def pending(ctx: typer.Context) -> None:
+    """Actions waiting to run, or waiting on you."""
+    core = _core(ctx)
+    items = core.executor.pending.outstanding()
+    if not items:
+        typer.echo("Nothing pending.")
+        return
+    for item in items:
+        typer.secho(item.describe(), bold=True)
+        if item.untrusted:
+            typer.secho(f"    from untrusted: {', '.join(item.untrusted)}",
+                        fg=typer.colors.YELLOW)
+        if item.nonce:
+            typer.echo(f"    confirm with: tango confirm {item.nonce}")
+        else:
+            typer.echo(f"    cancel with:  tango cancel {item.action_id}")
+
+
+@app.command()
+def confirm(ctx: typer.Context, nonce: str) -> None:
+    """Approve a pending action and run it."""
+    core = _core(ctx)
+    outcome = core.executor.confirm(nonce)
+    if outcome is None:
+        typer.secho("That confirmation is not valid — it may have been used, "
+                    "expired, or never existed.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    label = core.ledger.get(outcome.action_id)["tool"] if outcome.action_id else "Action"
+    step = StepOutcome(label=label, status=outcome.status, detail=outcome.detail)
+    status = TaskStatus.COMPLETED if outcome.status is ActionStatus.VERIFIED else TaskStatus.PARTIAL
+    typer.echo(render_task([step], status))
+
+
+@app.command()
+def cancel(ctx: typer.Context, action_id: str) -> None:
+    """Stop a pending action before it runs."""
+    core = _core(ctx)
+    if core.executor.pending.cancel(action_id):
+        typer.echo("Cancelled — it will not run.")
+    else:
+        typer.secho("Nothing pending with that id.", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+
+
+@app.command()
+def panic(ctx: typer.Context) -> None:
+    """Cancel everything that has not run yet."""
+    core = _core(ctx)
+    count = core.executor.pending.cancel_all()
+    typer.echo(f"Cancelled {count} pending action(s)." if count
+               else "Nothing was pending.")
 
 
 @app.command()

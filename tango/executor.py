@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tango.ledger import DuplicateAction, Evidence, Ledger, ToolResult, VerifyResult
+from tango.pending import Pending, PendingQueue
 from tango.policy import PolicyGate, TaskContext, Verdict
 from tango.render import StepOutcome
 from tango.store import Store, utcnow
@@ -62,6 +63,7 @@ class Executor:
         self.registry = registry
         self.store = store
         self.policy = policy or PolicyGate(store)
+        self.pending = PendingQueue(store)
         self.contexts: dict[str, TaskContext] = {}
 
     # ------------------------------------------------------------------ tasks
@@ -199,6 +201,20 @@ class Executor:
                 deduplicated=True,
             )
 
+        if decision.verdict is Verdict.UNDO_WINDOW and not confirmed:
+            self.pending.hold(
+                action_id=action_id, task_id=task_id, tool=tool.name, args=call.args,
+                label=call.step_id, kind="undo_window", reason=decision.reason,
+                undo_seconds=decision.undo_seconds,
+            )
+            self.store.conn.execute(
+                "UPDATE action SET status=? WHERE id=?", (ActionStatus.UNDO_WINDOW, action_id)
+            )
+            return Outcome(
+                action_id=action_id, status=ActionStatus.UNDO_WINDOW,
+                detail=f"running in {decision.undo_seconds}s — say cancel to stop it",
+            )
+
         if decision.verdict is Verdict.CONFIRM and not confirmed:
             nonce = self.policy.request_confirmation(
                 action_id, call.args, surface=ctx.surface,
@@ -207,6 +223,11 @@ class Executor:
             self.store.conn.execute(
                 "UPDATE action SET status=? WHERE id=?",
                 (ActionStatus.PENDING_CONFIRM, action_id),
+            )
+            self.pending.hold(
+                action_id=action_id, task_id=task_id, tool=tool.name, args=call.args,
+                label=call.step_id, kind="confirm", reason=decision.reason,
+                nonce=nonce, untrusted=decision.untrusted_sources,
             )
             return Outcome(
                 action_id=action_id, status=ActionStatus.PENDING_CONFIRM,
@@ -235,6 +256,84 @@ class Executor:
             detail=row["detail"] or "",
             evidence=self.ledger.evidence_for(action_id),
         )
+
+    def resume(self, pending: Pending) -> Outcome:
+        """Execute an action that was held, after re-checking it is still safe.
+
+        Preconditions are re-evaluated at execution time, not merely at
+        proposal time: confirming "restart the API" twenty minutes ago does not
+        authorise restarting whatever the API happens to be now (docs/16 §7.2).
+        """
+        tool = self.registry.get(pending.tool)
+        ctx = self.context(pending.task_id)
+
+        decision = self.policy.evaluate(
+            ctx, tool.name, pending.args, tool.risk,
+            compensable=tool.compensate is not None,
+        )
+        if decision.verdict is Verdict.DENY:
+            self.pending.resolve(pending.action_id, "cancelled")
+            self.store.conn.execute(
+                "UPDATE action SET status=?, detail=?, settled_at=? WHERE id=?",
+                (ActionStatus.DENIED, "conditions changed before it ran",
+                 utcnow(), pending.action_id),
+            )
+            return Outcome(action_id=pending.action_id, status=ActionStatus.DENIED,
+                           detail="conditions changed before it ran")
+
+        args = dict(pending.args)
+
+        def _execute() -> ToolResult:
+            return tool.executor(**args)
+
+        def _verify(result: ToolResult) -> VerifyResult:
+            assert tool.verifier is not None
+            return tool.verifier(result, args)
+
+        self.store.conn.execute(
+            "UPDATE action SET status=? WHERE id=?", (ActionStatus.CONFIRMED, pending.action_id)
+        )
+        status = self.ledger.commit(
+            pending.action_id, executor=_execute,
+            verifier=_verify if tool.verifier is not None else None,
+        )
+        self.pending.resolve(pending.action_id, "executed")
+        row = self.ledger.get(pending.action_id)
+        return Outcome(action_id=pending.action_id, status=status,
+                       detail=row["detail"] or "",
+                       evidence=self.ledger.evidence_for(pending.action_id))
+
+    def tick(self) -> list[tuple[Pending, Outcome]]:
+        """Run whatever is due and retire whatever expired.
+
+        Called on every CLI invocation and by the daemon loop. Undo windows are
+        wall-clock, so they must be driven by something that actually runs —
+        a timer living only in a dead process is a promise that was never kept.
+        """
+        self.pending.expire_stale()
+        results: list[tuple[Pending, Outcome]] = []
+        for pending in self.pending.due():
+            results.append((pending, self.resume(pending)))
+        return results
+
+    def confirm(self, nonce: str) -> Outcome | None:
+        """Redeem a confirmation and run the action it authorised."""
+        pending = self.pending.by_nonce(nonce)
+        if pending is None:
+            return None
+        accepted, reason = self.policy.consume_confirmation(nonce, pending.args)
+        if not accepted:
+            self.pending.resolve(pending.action_id, reason)
+            self.store.conn.execute(
+                "UPDATE action SET status=?, detail=?, settled_at=? WHERE id=?",
+                (ActionStatus.EXPIRED if reason == "expired" else ActionStatus.DENIED,
+                 reason, utcnow(), pending.action_id),
+            )
+            return Outcome(action_id=pending.action_id,
+                           status=ActionStatus.EXPIRED if reason == "expired"
+                           else ActionStatus.DENIED,
+                           detail=reason)
+        return self.resume(pending)
 
     def run_all(self, task_id: str, calls: list[tuple[str, ToolCall]]) -> list[StepOutcome]:
         """Run a labelled sequence of calls, returning renderer-ready steps.

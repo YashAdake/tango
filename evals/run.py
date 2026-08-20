@@ -214,7 +214,8 @@ def main() -> int:
               f"   gate {gate:.0%}")
 
     total_pass = sum(1 for r in live if r.passed)
-    print(f"\n  overall: {total_pass}/{len(live)} ({total_pass / len(live):.0%}) on measurable rows")
+    print(f"\n  overall: {total_pass}/{len(live)} "
+          f"({total_pass / len(live):.0%}) on measurable rows")
 
     by_lang: dict[str, list[Result]] = defaultdict(list)
     for res in live:

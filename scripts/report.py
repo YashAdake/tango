@@ -209,6 +209,7 @@ def s_live(allow_start: bool) -> Section:
         ["do", "delete", "the", "optiresume", "database"],
         ["do", "start", "it"],
         ["do", "order", "me", "a", "pizza"],
+        ["pending"],
     ]
     for args in read_only:
         code, out = run([PY, "-m", "tango.cli", *args], timeout=180)
