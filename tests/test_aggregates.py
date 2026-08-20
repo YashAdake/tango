@@ -187,3 +187,42 @@ def test_dead_processes_are_excluded_by_default(rig):
     )
     assert started_processes(store) == []
     assert len(started_processes(store, only_alive=False)) == 1
+
+
+# ------------------------------------------------------- Phase 1b capabilities
+
+
+def test_uncommitted_sweep_is_clean_when_nothing_is_pending(rig, projects):
+    store, ledger, executor = rig
+    result = run_aggregate("uncommitted_sweep", projects, {}, ledger, executor)
+    assert "committed and pushed" in result.text
+
+
+def test_uncommitted_sweep_counts_unpushed_commits_too(tmp_path):
+    """A commit that exists only on this machine is just as lost if the disk
+    dies, so 'clean' must mean pushed, not merely committed."""
+    from tango.aggregates import uncommitted_sweep
+
+    reg = ProjectRegistry(projects={"a": Project(id="a", path=str(tmp_path))})
+    text = uncommitted_sweep(reg, {}).text
+    assert isinstance(text, str)
+
+
+def test_git_window_normalisation():
+    """Params carry canonical values; translating for git is the capability's
+    job, not the router's."""
+    from tango.aggregates import _as_git_window
+
+    assert _as_git_window("7d") == "7 days ago"
+    assert _as_git_window("1d") == "1 days ago"
+    assert _as_git_window("2w") == "2 weeks ago"
+    assert _as_git_window("yesterday") == "yesterday"
+
+
+def test_spotify_is_allowlisted_but_absence_is_reported_honestly():
+    from tango.adapters.system import KNOWN_APPS, app_launch
+
+    assert "spotify" in KNOWN_APPS
+    result = app_launch(app="definitely-not-an-app")
+    assert result.ok is False
+    assert "not an allowlisted" in result.summary

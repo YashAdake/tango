@@ -18,7 +18,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from tango.adapters.inspect import git_log_since, http_probe, port_inspect
+from tango.adapters.inspect import git_log_since, git_state, http_probe, port_inspect
 from tango.ledger import Evidence, Ledger, ToolResult, VerifyResult
 from tango.projects import ProjectRegistry
 from tango.status import collect, render
@@ -128,11 +128,52 @@ def port_free(projects: ProjectRegistry, params: dict[str, Any]) -> AggregateRes
     return AggregateResult(text, data, result.summary)
 
 
+def uncommitted_sweep(projects: ProjectRegistry, params: dict[str, Any]) -> AggregateResult:
+    """Work in progress across every repo — the thing that silently rots.
+
+    Reports unpushed commits as well as uncommitted files: a commit that exists
+    only on this machine is just as lost if the disk dies."""
+    rows: list[dict[str, Any]] = []
+    for project in sorted(projects.projects.values(), key=lambda p: p.id):
+        result = git_state(path=project.path)
+        if not result.raw or result.raw == "{}":
+            continue
+        data = json.loads(result.raw)
+        if data.get("dirty") or data.get("ahead"):
+            rows.append({"id": project.id, **data})
+
+    if not rows:
+        return AggregateResult("Everything is committed and pushed.",
+                               {"repos": []}, "all clean")
+
+    files = sum(r.get("dirty", 0) for r in rows)
+    commits = sum(r.get("ahead", 0) for r in rows)
+    head = []
+    if files:
+        head.append(f"{files} uncommitted file(s)")
+    if commits:
+        head.append(f"{commits} unpushed commit(s)")
+    lines = [f"{' and '.join(head)} across {len(rows)} project(s)", ""]
+
+    width = max(len(str(r["id"])) for r in rows)
+    for r in rows:
+        marks = []
+        if r.get("dirty"):
+            marks.append(f"{r['dirty']} uncommitted")
+        if r.get("ahead"):
+            marks.append(f"{r['ahead']} unpushed")
+        lines.append(f"  {str(r['id']).ljust(width)}  {r.get('branch', '?')} · {', '.join(marks)}")
+    return AggregateResult(
+        "\n".join(lines), {"repos": rows}, f"{files} files, {commits} commits"
+    )
+
+
 CAPABILITIES: dict[str, Callable[[ProjectRegistry, dict[str, Any]], AggregateResult]] = {
     "status_all": status_all,
     "prod_check": prod_check,
     "git_digest": git_digest,
     "port_free": port_free,
+    "uncommitted_sweep": uncommitted_sweep,
 }
 
 

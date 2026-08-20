@@ -1,0 +1,12 @@
+{
+  "id": "open_app",
+  "version": 1,
+  "description": "Launch an allowlisted desktop application.",
+  "risk": "R1_REVERSIBLE",
+  "params": {
+    "app": {"type": "str", "required": true}
+  },
+  "steps": [
+    {"id": "launch", "tool": "app.launch", "label": "App", "args": {"app": "$app"}}
+  ]
+}

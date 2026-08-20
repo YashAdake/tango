@@ -377,3 +377,59 @@ human phrasing baked into a parameter. Params should carry canonical values
 - Compose path still unexercised end-to-end (Docker down on this machine).
 - Golden set remains Claude-drafted; 100% is against my guesses at the owner's phrasing.
 - `git_digest` reads only default-branch history; per-branch digests not considered yet.
+
+---
+
+## V5 — Phase 1 part 2 (dev_switch, open_app, uncommitted_sweep, context scoping)
+
+**Date:** 2026-08-19 · **Verdict:** PASS · **Gate:** 7/7 green
+**Routing: 44/44 (100%) measurable — up from 38. Hinglish 7/7. Deferred 23 → 17.**
+
+### What landed
+
+`dev_switch` and `open_app` playbooks, the `uncommitted_sweep` aggregate,
+context-scoped routing, app-key normalisation, and Hinglish coverage for
+shutdown, app-launch and the digest.
+
+### Judgement calls, and one deliberate non-build
+
+**Timers, alarms and reminders were NOT built, and that is the correct
+outcome.** Four golden rows (g010, g011, g014, g029) want them. Building a
+laptop-side scheduler would recreate precisely the defect docs/17 H5
+identified: *the laptop sleeps, so an alarm scheduled on it dies with the lid.*
+FR-P5 already settled this — time-critical events are **phone-native by
+default** — so the rows are tagged phase 5 rather than satisfied dishonestly.
+
+Passing those rows today was available and cheap. It would have meant shipping
+an alarm that silently does not go off, which is worse than not having one.
+
+**`uncommitted_sweep` counts unpushed commits, not just uncommitted files.** A
+commit that exists only on this machine is just as lost if the disk dies, so
+"clean" has to mean pushed.
+
+**Context scoping is opt-in per rule** (`scope_to_context`). *"How many
+uncommitted files"* means *here* when here is established; *"anything
+uncommitted anywhere"* deliberately does not narrow. Making scoping automatic
+would silently shrink workspace-wide questions.
+
+**Spotify joined the app allowlist rather than the request being refused.** If
+it is not installed, `app.launch` reports that honestly — an unverified launch
+becomes REFUTED with "not found on PATH". Which app "play some music" means is
+an owner preference; one line of config changes it.
+
+### Spec conformance
+
+| AC | Status |
+|---|---|
+| Ten+ playbooks/capabilities routed and verified (M1) | ✅ 11 routable capabilities |
+| Real-world entities resolved, never authored (ADR-009) | ✅ app keys normalised through the allowlist |
+| Numeric params typed correctly | ✅ regression test pins `port` as `int` |
+| Refusals still evaluated before playbooks | ✅ unchanged, still 7/7 |
+
+### Known gaps
+
+- `diagnose` unbuilt — Phase 4, and the highest-value remaining capability.
+- Freeform planner unbuilt — Phase 4.
+- 17 rows deferred: diagnose (Phase 4), planner (Phase 4), timers/calls (Phase 5), morning brief (Phase 7), `@running` and `@last_deployed` placeholders.
+- **The golden set is still Claude-drafted.** 100% measures the router against my guesses at the owner's phrasing. The number becomes meaningful only after the owner edit pass — which is why owner rows are weighted toward the sealed holdout.
+- Compose path still unexercised end-to-end (Docker down on this machine).

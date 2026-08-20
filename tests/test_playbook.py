@@ -257,7 +257,10 @@ def test_ambiguity_asks_rather_than_picks(projects):
 
 @pytest.fixture()
 def router(projects) -> Router:
-    return Router(projects, known_playbooks={"dev_up", "dev_down", "status_all", "shutdown_all"})
+    return Router(projects, known_playbooks={
+        "dev_up", "dev_down", "dev_switch", "status_all", "shutdown_all",
+        "open_app", "uncommitted_sweep", "port_free", "prod_check", "git_digest",
+    })
 
 
 @pytest.mark.parametrize("utterance,reason", [
@@ -443,3 +446,50 @@ def test_rules_win_before_the_model_is_ever_consulted(projects):
     r = Router(projects, known_playbooks={"dev_up"}, model=Counting())
     r.route("start optiresume")
     assert Counting.calls == 0
+
+
+# ---------------------------------------------------- Phase 1b routing (V5)
+
+
+def test_switch_routes_to_dev_switch(router):
+    d = router.route("switch to myjson")
+    assert d.playbook_id == "dev_switch"
+    assert d.params["project"] == "myjson"
+
+
+@pytest.mark.parametrize("utterance,app", [
+    ("open vs code", "vscode"),
+    ("open code", "vscode"),
+    ("open chrome", "chrome"),
+    ("chrome khol do", "chrome"),
+])
+def test_open_app_normalises_the_app_key(router, utterance, app):
+    """"vs code" and "code" name the same allowlist entry; the model never
+    supplies an executable path (ADR-009)."""
+    d = router.route(utterance)
+    assert d.playbook_id == "open_app"
+    assert d.params["app"] == app
+
+
+def test_uncommitted_sweep_scopes_to_the_conversation(router):
+    """"How many uncommitted files" means *here*, when here is established."""
+    wide = router.route("anything uncommitted anywhere?")
+    narrow = router.route("how many uncommitted files",
+                          context={"prior_project": "myjson"})
+    assert wide.playbook_id == narrow.playbook_id == "uncommitted_sweep"
+    assert "project" not in wide.params
+    assert narrow.params["project"] == "myjson"
+
+
+def test_hinglish_shutdown_is_not_read_as_a_project(router):
+    """"sab kuch" means everything, not a project called "sab kuch"."""
+    assert router.route("sab kuch band kar do").playbook_id == "shutdown_all"
+    assert router.route("myjson band kar do").playbook_id == "dev_down"
+
+
+def test_numeric_params_are_numbers(router):
+    """Regex groups are strings; a param the contract types as a number must
+    BE a number, or comparisons downstream quietly do the wrong thing."""
+    d = router.route("what's hogging port 3000")
+    assert d.params["port"] == 3000
+    assert isinstance(d.params["port"], int)

@@ -23,6 +23,7 @@ KNOWN_APPS: dict[str, str] = {
     "chrome": "chrome",
     "explorer": "explorer",
     "terminal": "wt",
+    "spotify": "spotify",
 }
 
 

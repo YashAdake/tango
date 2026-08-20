@@ -46,6 +46,9 @@ class Rule:
     static: dict[str, Any] = field(default_factory=dict)
     resolve_project: str | None = None
     """Name of the group whose value should go through the project resolver."""
+    scope_to_context: bool = False
+    """Narrow to the conversation's current project when the utterance names
+    none. "How many uncommitted files" means *here*, if here is established."""
 
 
 # Refusals come first: an utterance that matches one must never fall through to
@@ -121,6 +124,23 @@ RULES: tuple[Rule, ...] = (
          "port_free", static={"mode": "inspect"}),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?free\s+(?:up\s+)?port\s+(?P<port>\d+)\s*$", re.I),
          "port_free", static={"mode": "kill"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?switch\s+to\s+(?P<project>.+?)\s*$", re.I),
+         "dev_switch", resolve_project="project"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?open\s+(?:up\s+)?"
+                    r"(?P<app>vs\s*code|code|chrome|explorer|terminal)\s*$", re.I),
+         "open_app"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?P<app>chrome|code|terminal|explorer)\s+"
+                    r"khol\s*(?:do|de|dijiye)?\s*$", re.I),
+         "open_app"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?:anything\s+)?uncommitted"
+                    r"(?:\s+anywhere)?\s*\??\s*$", re.I), "uncommitted_sweep"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?how\s+many\s+uncommitted"
+                    r"(?:\s+files?)?\s*\??\s*$", re.I),
+         "uncommitted_sweep", scope_to_context=True),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?play\s+(?:some\s+)?music\s*$", re.I),
+         "open_app", static={"app": "spotify"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?what'?s?\s+uncommitted"
+                    r"(?:\s+anywhere)?\s*\??\s*$", re.I), "uncommitted_sweep"),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?sab\s+kuch\s+"
                     r"(?:band|bandh)\s+kar\s*(?:de|do|dijiye)?\s*$", re.I), "shutdown_all"),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?did\s+the\s+deploy\s+"
@@ -241,6 +261,16 @@ class Router:
             params.update(
                 {k: (int(v) if v.isdigit() else v) for k, v in m.groupdict().items() if v}
             )
+
+            scoped = _prior_project(context) if rule.scope_to_context else None
+            if scoped and "project" not in params:
+                params["project"] = scoped
+
+            if "app" in params:
+                normalized = re.sub(r"\s+", "", str(params["app"]).lower())
+                params["app"] = {"vscode": "vscode", "code": "vscode"}.get(
+                    normalized, normalized
+                )
 
             if rule.resolve_project and rule.resolve_project in params:
                 try:

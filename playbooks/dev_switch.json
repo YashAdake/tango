@@ -1,0 +1,42 @@
+{
+  "id": "dev_switch",
+  "version": 1,
+  "description": "Move to another project: stop what is running, start the target.",
+  "risk": "R1_REVERSIBLE",
+  "params": {
+    "project": {"type": "ProjectId", "required": true, "resolver": "resolve_project"},
+    "_project": {"type": "Project", "required": true},
+    "has_compose": {"type": "bool", "required": false, "default": false},
+    "has_dev_cmd": {"type": "bool", "required": false, "default": false}
+  },
+  "steps": [
+    {
+      "id": "db",
+      "tool": "docker.compose_up",
+      "label": "Database",
+      "when": "params.has_compose == true",
+      "args": {
+        "project_path": "${_project.compose_path}",
+        "service": "${_project.compose_service}",
+        "container": "${_project.container}",
+        "compose_file": "${_project.compose_file}"
+      },
+      "on_fail": "abort"
+    },
+    {
+      "id": "dev",
+      "tool": "process.start",
+      "label": "Dev server",
+      "when": "params.has_dev_cmd == true",
+      "args": {"cmd": "${_project.dev_cmd}", "cwd": "${_project.path}"},
+      "on_fail": "continue"
+    },
+    {
+      "id": "editor",
+      "tool": "app.launch",
+      "label": "Editor",
+      "args": {"app": "vscode", "path": "${_project.path}"},
+      "on_fail": "continue"
+    }
+  ]
+}
