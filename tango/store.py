@@ -13,6 +13,7 @@ concurrency.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -136,6 +137,10 @@ class Store:
             check_same_thread=False,
         )
         self.conn.row_factory = sqlite3.Row
+        # tango-core is the single writer (docs/17 C4). Two threads calling
+        # BEGIN IMMEDIATE on one connection is an error, not contention, so
+        # writes are serialized here rather than left to SQLite to reject.
+        self._write_lock = threading.RLock()
         self._configure()
         self._migrate()
 
@@ -163,15 +168,25 @@ class Store:
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
-        """Explicit transaction. Rolls back on any exception."""
-        self.conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield self.conn
-        except Exception:
-            self.conn.execute("ROLLBACK")
-            raise
-        else:
-            self.conn.execute("COMMIT")
+        """Explicit, serialized transaction. Rolls back on any exception.
+
+        The lock is what makes concurrent surfaces safe: voice and Telegram can
+        both act, and the second one waits rather than colliding. Reentrant, so
+        a transaction can call code that opens another.
+        """
+        with self._write_lock:
+            in_outer = self.conn.in_transaction
+            if not in_outer:
+                self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self.conn
+            except Exception:
+                if not in_outer:
+                    self.conn.execute("ROLLBACK")
+                raise
+            else:
+                if not in_outer:
+                    self.conn.execute("COMMIT")
 
     def audit(
         self,

@@ -203,7 +203,19 @@ class Ledger:
             )
             return ActionStatus.UNVERIFIABLE
 
-        verdict = verifier(result)
+        try:
+            verdict = verifier(result)
+        except Exception as exc:
+            # The check itself could not run — Docker unreachable, network gone,
+            # a bug in the verifier. That is not evidence the action succeeded,
+            # and it is not evidence it failed. Say exactly that.
+            self._settle(
+                action_id,
+                ActionStatus.UNVERIFIABLE,
+                detail=f"could not verify: {exc.__class__.__name__}: {exc}",
+            )
+            return ActionStatus.UNVERIFIABLE
+
         self._record_evidence(action_id, verdict.evidence)
         final = {
             VerifyStatus.VERIFIED: ActionStatus.VERIFIED,

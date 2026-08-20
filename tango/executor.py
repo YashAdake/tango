@@ -12,6 +12,7 @@ while the ledger only knows about ``result``. The binding happens here, once.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,6 +66,12 @@ class Executor:
         self.policy = policy or PolicyGate(store)
         self.pending = PendingQueue(store)
         self.contexts: dict[str, TaskContext] = {}
+        # A SQLite connection is not safe for concurrent use, and 'single
+        # writer' (docs/17 C4) is a claim that has to be enforced somewhere.
+        # Here: one action at a time. Voice and Telegram can both act; the
+        # second waits, then meets the idempotency key rather than a
+        # half-written row.
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ tasks
 
@@ -150,9 +157,14 @@ class Executor:
     def run(self, task_id: str, call: ToolCall, *, confirmed: bool = False) -> Outcome:
         """Execute one tool call end-to-end: propose, commit, verify.
 
-        Every refusal path leaves an audit row. A refusal nobody can later find
-        is a near-miss you are guaranteed to repeat.
+        Serialized: one action at a time, per the single-writer rule. Every
+        refusal path leaves an audit row — a refusal nobody can later find is a
+        near-miss you are guaranteed to repeat.
         """
+        with self._lock:
+            return self._run_locked(task_id, call, confirmed=confirmed)
+
+    def _run_locked(self, task_id: str, call: ToolCall, *, confirmed: bool = False) -> Outcome:
         try:
             tool = self.registry.get(call.tool)
         except KeyError:

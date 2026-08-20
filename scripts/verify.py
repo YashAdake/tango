@@ -55,6 +55,8 @@ GATES: list[Gate] = [
          "the honesty guarantee: no unproven completion claim can ship"),
     Gate("injection", [PY, "-m", "pytest", "tests/test_policy.py", "-q", "-k", "injection"],
          "untrusted content cannot make Tango act — refused, recorded, and visible"),
+    Gate("chaos", [PY, "-m", "pytest", "tests/test_failure_injection.py", "-q"],
+         "under injected failure Tango may lose capability, never honesty"),
     Gate("eval", [PY, "evals/run.py", "--all"],
          "routing accuracy against the golden set — the instrument, not a test"),
 ]

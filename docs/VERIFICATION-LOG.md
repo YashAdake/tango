@@ -511,3 +511,82 @@ I would otherwise ask interactively has to be answered by one script run.
 - Standing authorizations are evaluated but have no persistence or management UI; they are constructed in code.
 - No `tango confirm <nonce>` command yet — confirmations are created and consumed, but the CLI surface is Phase 5.
 - `hosts/egress.json` is not shipped; without it every recipient is denied, which is the correct default but means email work needs config first.
+
+---
+
+## V7 — Undo windows, confirmation surface, and failure injection
+
+**Date:** 2026-08-19 · **Verdict:** PASS after 2 fixes · **Gate:** 9/9 green
+(`chaos` is new)
+
+### What landed
+
+`tango/pending.py` — durable queue for held actions. Executor `resume()`,
+`tick()`, `confirm()`. Four CLI commands (`pending`, `confirm`, `cancel`,
+`panic`). And the failure-injection suite: 14 tests that deliberately break
+Tango to see what it claims.
+
+### Defects found — both only findable by breaking things
+
+**D17 · A verifier that itself fails crashed the run.** `ledger.commit` called
+the verifier outside any `try`, so a verifier raising (Docker unreachable, a bug
+in the check, network gone) propagated and killed the whole playbook.
+
+Worse than the crash is what it implies: the system had no answer for *"the
+check could not run"*. That is neither success nor failure — it is exactly what
+`UNVERIFIABLE` exists for, and the one path that could produce it honestly was
+missing. Now caught and settled as `UNVERIFIABLE` with the reason attached.
+
+**D18 · Concurrent tasks corrupted the connection.** Two threads running actions
+produced `cannot start a transaction within a transaction`, then
+`InterfaceError: bad parameter or other API misuse`. docs/17 C4 flagged the
+missing concurrency model and I recorded "tango-core is the single writer" as a
+*claim* without enforcing it anywhere.
+
+*Fix, in two parts:* a reentrant lock around `Store.tx()` (nested transactions
+now join the outer one rather than colliding), and serialization at
+`Executor.run()` — one action at a time, which is what single-writer actually
+means. Voice and Telegram can both act; the second waits, then meets the
+idempotency key rather than a half-written row. The racing test now passes for
+the right reason: **four concurrent callers, one effect.**
+
+### The chaos suite
+
+| Scenario | Required behaviour |
+|---|---|
+| Death between effect and record | Recovery **asks the provider**, never re-sends |
+| Recovery run repeatedly | Idempotent — a crash loop must not rewrite history |
+| Provider hangs / raises | `REFUTED` with the real reason, never assumed |
+| **Verifier itself fails** | `UNVERIFIABLE` — the check not running is its own answer |
+| Garbage response | Does not become evidence |
+| **Four threads, same step** | **One effect** |
+| Interleaved tasks | Separate ledgers, whichever order they land |
+| Clock jumps backwards | Windows do not fire early |
+| Expired confirmation redeemed late | `EXPIRED`, nothing runs |
+| Read-only store | Fails loudly — an unrecorded action cannot be verified or undone |
+| Schema version mismatch | Refuses to open rather than silently misreading |
+| Unclean close | WAL + `synchronous=FULL` preserves the write |
+| **Every failure path** | **Zero unlicensed claims** |
+
+That last row is the suite's actual thesis, asserted directly: under any
+injected failure Tango may lose capability, but never honesty.
+
+### Design decisions
+
+**Held actions are durable, not in-memory.** A window living only in memory
+silently becomes "executed immediately" on restart. Tested by closing the store
+and reopening from disk.
+
+**`resume()` re-evaluates policy before executing.** Confirming "restart the
+API" twenty minutes ago does not authorise restarting whatever the API happens
+to be now. Tested by poisoning the task's trust context while the window is open
+and asserting the held action is denied rather than executed.
+
+**Expiry is visible.** A terminal state with a message, never a silent drop —
+silent expiry is how users learn a system cannot be trusted to remember.
+
+### Known gaps
+
+- Advisory per-resource locks (docs/17 C4's finer-grained proposal) remain unbuilt; global serialization is correct but coarser than specced. Fine for one user.
+- No daemon: `tick()` runs on CLI invocation, so an undo window only closes when something runs. A background service is Phase 5.
+- `diagnose` and the freeform planner still need a model.
