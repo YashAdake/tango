@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tango.ledger import DuplicateAction, Evidence, Ledger, ToolResult, VerifyResult
+from tango.policy import PolicyGate, TaskContext, Verdict
 from tango.render import StepOutcome
 from tango.store import Store, utcnow
 from tango.tools import ToolCall, ToolRegistry
@@ -34,6 +35,9 @@ class Outcome:
     deduplicated: bool = False
     """True when an identical action already existed — the idempotency
     guarantee working, not an error."""
+    nonce: str = ""
+    """Set when the action is parked awaiting confirmation."""
+    untrusted_sources: tuple[str, ...] = ()
 
     def to_step(self, label: str) -> StepOutcome:
         return StepOutcome(
@@ -47,10 +51,18 @@ class Outcome:
 class Executor:
     """Runs tool calls through the ledger and keeps task state honest."""
 
-    def __init__(self, ledger: Ledger, registry: ToolRegistry, store: Store) -> None:
+    def __init__(
+        self,
+        ledger: Ledger,
+        registry: ToolRegistry,
+        store: Store,
+        policy: PolicyGate | None = None,
+    ) -> None:
         self.ledger = ledger
         self.registry = registry
         self.store = store
+        self.policy = policy or PolicyGate(store)
+        self.contexts: dict[str, TaskContext] = {}
 
     # ------------------------------------------------------------------ tasks
 
@@ -80,7 +92,28 @@ class Executor:
                     trace_id or str(uuid.uuid4()), surface, now, now,
                 ),
             )
+        self.contexts[task_id] = TaskContext(task_id=task_id, surface=surface)
         return task_id
+
+    def context(self, task_id: str) -> TaskContext:
+        """Trust state for a task. Created on demand so a task started
+        elsewhere still gets policed rather than silently unpoliced."""
+        if task_id not in self.contexts:
+            self.contexts[task_id] = TaskContext(task_id=task_id)
+        return self.contexts[task_id]
+
+    def observe(self, task_id: str, source: str, text: str = "") -> None:
+        """Record content entering a task, with its trust labels."""
+        from tango.policy import classify_content
+
+        integrity, confidentiality = classify_content(source, text)
+        ctx = self.context(task_id)
+        ctx.observe(integrity, confidentiality, source)
+        self.store.conn.execute(
+            "UPDATE task SET max_integrity=?, max_confidentiality=?, updated_at=?"
+            " WHERE id=?",
+            (int(ctx.max_integrity), int(ctx.max_confidentiality), utcnow(), task_id),
+        )
 
     def task_status(self, task_id: str) -> TaskStatus:
         """Derive task status from the ledger — never from what anyone claimed.
@@ -112,7 +145,7 @@ class Executor:
 
     # -------------------------------------------------------------- execution
 
-    def run(self, task_id: str, call: ToolCall) -> Outcome:
+    def run(self, task_id: str, call: ToolCall, *, confirmed: bool = False) -> Outcome:
         """Execute one tool call end-to-end: propose, commit, verify.
 
         Every refusal path leaves an audit row. A refusal nobody can later find
@@ -134,6 +167,17 @@ class Executor:
                 detail=f"'{call.tool}' is not a tool I have",
             )
 
+        ctx = self.context(task_id)
+        decision = self.policy.evaluate(
+            ctx, tool.name, call.args, tool.risk,
+            compensable=tool.compensate is not None,
+        )
+        if decision.verdict is Verdict.DENY:
+            return Outcome(
+                action_id=None, status=ActionStatus.DENIED,
+                detail=decision.message or decision.reason,
+            )
+
         try:
             action_id = self.ledger.propose(
                 task_id=task_id,
@@ -153,6 +197,21 @@ class Executor:
                 detail=existing["detail"] or "already done in this task",
                 evidence=self.ledger.evidence_for(dup.action_id),
                 deduplicated=True,
+            )
+
+        if decision.verdict is Verdict.CONFIRM and not confirmed:
+            nonce = self.policy.request_confirmation(
+                action_id, call.args, surface=ctx.surface,
+                untrusted_sources=decision.untrusted_sources,
+            )
+            self.store.conn.execute(
+                "UPDATE action SET status=? WHERE id=?",
+                (ActionStatus.PENDING_CONFIRM, action_id),
+            )
+            return Outcome(
+                action_id=action_id, status=ActionStatus.PENDING_CONFIRM,
+                detail=decision.message, nonce=nonce,
+                untrusted_sources=decision.untrusted_sources,
             )
 
         args = dict(call.args)

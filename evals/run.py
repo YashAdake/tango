@@ -221,7 +221,8 @@ def main() -> int:
         by_lang[res.row.lang].append(res)
     if len(by_lang) > 1:
         detail = "  ".join(
-            f"{lang}: {sum(1 for r in g if r.passed)}/{len(g)}" for lang, g in sorted(by_lang.items())
+            f"{lang}: {sum(1 for r in g if r.passed)}/{len(g)}"
+            for lang, g in sorted(by_lang.items())
         )
         print(f"  by language: {detail}")
 
