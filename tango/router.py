@@ -124,6 +124,18 @@ RULES: tuple[Rule, ...] = (
          "port_free", static={"mode": "inspect"}),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?free\s+(?:up\s+)?port\s+(?P<port>\d+)\s*$", re.I),
          "port_free", static={"mode": "kill"}),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?:why|what\s+happened)\s*\??\s*$", re.I),
+         "diagnose", scope_to_context=True),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?why\s+(?:is|are)\s+(?:the\s+)?"
+                    r"(?P<target>.+?)\s+(?:down|broken|failing|not\s+working|dead)"
+                    r"\s*\??\s*$", re.I), "diagnose"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?what(?:'s|\s+is|s)?\s+(?:wrong|broken|going\s+on)"
+                    r"(?:\s+with\s+(?P<target>.+?))?\s*\??\s*$", re.I), "diagnose"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?(?P<target>.+?)\s+kyu\s+"
+                    r"(?:mar\s+gay[ia]|band\s+ho\s+gay[ia])(\s+phir\s+se)?\s*\??\s*$",
+                    re.I), "diagnose"),
+    Rule(re.compile(r"^\s*(?:tango[,\s]+)?diagnose(?:\s+(?P<target>.+?))?\s*$", re.I),
+         "diagnose"),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?switch\s+to\s+(?P<project>.+?)\s*$", re.I),
          "dev_switch", resolve_project="project"),
     Rule(re.compile(r"^\s*(?:tango[,\s]+)?open\s+(?:up\s+)?"
@@ -265,6 +277,11 @@ class Router:
             scoped = _prior_project(context) if rule.scope_to_context else None
             if scoped and "project" not in params:
                 params["project"] = scoped
+            if rule.playbook == "diagnose" and "target" not in params:
+                params["target"] = scoped or "*"
+
+            if "target" in params:
+                params["target"] = self._canonical_target(str(params["target"]))
 
             if "app" in params:
                 normalized = re.sub(r"\s+", "", str(params["app"]).lower())
@@ -291,6 +308,26 @@ class Router:
         return self._model_fallback(text)
 
     # ------------------------------------------------------------ model tier
+
+    def _canonical_target(self, phrase: str) -> str:
+        """Normalise "optiresume api" to "optiresume.api".
+
+        A target names either a project or a component within one. Keeping the
+        raw phrase would make every consumer re-parse it, and they would each
+        get it slightly differently.
+        """
+        words = phrase.strip().split()
+        if not words:
+            return phrase
+        for split in range(1, len(words) + 1):
+            head = " ".join(words[:split])
+            try:
+                project = self.projects.resolve(head)
+            except (AmbiguousResolution, ResolutionError):
+                continue
+            rest = words[split:]
+            return f"{project.id}.{'.'.join(rest)}" if rest else project.id
+        return phrase
 
     def _model_fallback(self, text: str) -> Decision:
         """Ask the local model only when the rules found nothing.

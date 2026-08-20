@@ -168,12 +168,45 @@ def uncommitted_sweep(projects: ProjectRegistry, params: dict[str, Any]) -> Aggr
     )
 
 
+def diagnose(projects: ProjectRegistry, params: dict[str, Any]) -> AggregateResult:
+    """Gather evidence about what is wrong. Deliberately does not repair.
+
+    Without a model this still earns its place: it is the five minutes of
+    tab-hopping you would have done, already done, with the strongest signal
+    surfaced. What it must not do is pretend to a diagnosis it has not earned
+    (tango/diagnose.py).
+    """
+    from tango.diagnose import diagnose_project, diagnose_workspace
+
+    target = params.get("target") or params.get("project")
+    if target and target != "*":
+        try:
+            project = projects.resolve(str(target))
+        except Exception:
+            dossier = diagnose_workspace(projects)
+        else:
+            dossier = diagnose_project(project)
+    else:
+        dossier = diagnose_workspace(projects)
+
+    strongest = dossier.strongest
+    return AggregateResult(
+        text=dossier.render(),
+        raw={"target": dossier.target,
+             "findings": [f.__dict__ for f in dossier.ranked],
+             "logs": dossier.logs[-25:]},
+        summary=(strongest.detail if strongest
+                 else f"{len(dossier.findings)} observation(s), nothing conclusive"),
+    )
+
+
 CAPABILITIES: dict[str, Callable[[ProjectRegistry, dict[str, Any]], AggregateResult]] = {
     "status_all": status_all,
     "prod_check": prod_check,
     "git_digest": git_digest,
     "port_free": port_free,
     "uncommitted_sweep": uncommitted_sweep,
+    "diagnose": diagnose,
 }
 
 

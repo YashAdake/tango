@@ -590,3 +590,88 @@ silent expiry is how users learn a system cannot be trusted to remember.
 - Advisory per-resource locks (docs/17 C4's finer-grained proposal) remain unbuilt; global serialization is correct but coarser than specced. Fine for one user.
 - No daemon: `tick()` runs on CLI invocation, so an undo window only closes when something runs. A background service is Phase 5.
 - `diagnose` and the freeform planner still need a model.
+
+---
+
+## V8 — Diagnosis: the evidence half
+
+**Date:** 2026-08-19 · **Verdict:** PASS after 3 fixes · **Gate:** 9/9 green
+**Routing: 46/46 (100%) measurable — up from 44. Hinglish 8/8. Deferred 17 → 13.**
+
+### The split, and why it is the whole design
+
+`diagnose` is two jobs, and separating them is the point:
+
+* **Evidence collection is code.** Containers, health probes, recently-changed
+  config, git state, ports, log scanning. Deterministic, testable without a
+  model, and what it returns is *fact*.
+* **Reasoning over that evidence is the model's job**, in Phase 4, over exactly
+  what this produced.
+
+Doing it the other way round — letting a model decide what to look at — is how
+you get a confident narrative built on whatever happened to be in context. Here
+the model will be handed a fixed dossier and asked to explain it.
+
+**Which means it works today, without a model.** Against the real workspace:
+
+```
+Evidence for optiresume:
+ ! health endpoint unreachable: [WinError 10061] ... actively refused it
+   optiresume-dev-db does not exist
+   port 8000 is free — nothing is listening
+   4 uncommitted file(s) on dev
+   last commit: 1f38bb4 fix(ai): career stage counted years at university …
+
+Most likely relevant: health endpoint unreachable …
+(That is what the evidence points at, not a diagnosis — I have not verified a cause.)
+```
+
+That last line is doing real work. The system has evidence and a ranking; it
+does **not** have a verified cause, and saying so is the difference between this
+and a plausible story.
+
+### Design decisions
+
+**Findings are weighted by what they rule out, not what they suggest.** A
+container that exited, or a `.env` touched four minutes ago, is weight 3. Two
+uncommitted files is weight 1. `strongest` only returns something at weight ≥ 2,
+so three pieces of context never get promoted into a conclusion — tested.
+
+**Log scanning is keyword-based, deliberately.** It runs before any model sees
+anything, and a deterministic filter cannot invent a cause that was not in the
+logs. Each signal reports once, not per line: a hundred identical errors are one
+finding.
+
+**Recently-changed config is a first-class signal.** "It worked yesterday"
+almost always has a change behind it, and the change is usually in a `.env`
+nobody committed.
+
+**Diagnosis never repairs.** "I found the problem and fixed it" is two claims,
+and the second needs its own evidence. Remediation stays a separate confirmed
+action.
+
+### Defects found
+
+**D19 · Target normalisation swallowed the component.** `"why is the optiresume
+api down"` produced target `optiresume`, losing `api`, because the prefix loop
+ran longest-first and `"optiresume api"` fuzzy-matched the project. Reversed to
+shortest-resolving-prefix, so the remainder survives: `optiresume.api`.
+
+**D20 · "what is wrong" did not match** — the pattern accepted `what's` but not
+`what is`. Same question, and people type both.
+
+**D21 · Bare "why" had no referent.** After a failed task, people do not repeat
+the subject. Now routes to `diagnose` scoped to context.
+
+### Judgement call
+
+`g028 "api kyu mar gayi phir se"` expects `@last_api` — *the API we were just
+talking about*. That needs conversation memory the Contextualizer will provide
+(docs/17 H3, Phase 3). Answering with the workspace sweep is a nearby but
+different answer, so the row is deferred rather than the expectation weakened.
+
+### Known gaps
+
+- The reasoning half needs a model. `Dossier.as_prompt()` is built and tested; nothing consumes it yet.
+- No remediation playbooks — proposing a fix is Phase 4, applying one is confirm-gated.
+- Log scanning covers ten common shapes; real failures will suggest more, and each one becomes a pattern plus a test.

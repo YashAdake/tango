@@ -25,7 +25,7 @@
 {"id": "g025", "utterance": "prod theek chal raha hai na?", "expect": {"playbook": "prod_check", "params": {"project": "*"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft"}
 {"id": "g026", "utterance": "port 3000 pe kaun baitha hai yaar", "expect": {"playbook": "port_free", "params": {"port": 3000, "mode": "inspect"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft"}
 {"id": "g027", "utterance": "aaj kya kya ship kiya maine", "expect": {"playbook": "git_digest", "params": {"since": "1d"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft"}
-{"id": "g028", "utterance": "api kyu mar gayi phir se", "expect": {"playbook": "diagnose", "params": {"target": "@last_api"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft"}
+{"id": "g028", "utterance": "api kyu mar gayi phir se", "expect": {"playbook": "diagnose", "params": {"target": "@last_api"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft", "phase": 3, "note": "'@last_api' needs conversation memory (Contextualizer, docs/17 H3)"}
 {"id": "g029", "utterance": "kal subah 6 baje alarm laga de", "expect": {"playbook": "alarm", "params": {"time": "06:00", "day": "+1"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft", "note": "time-critical: phone-native by default (FR-P5 / docs17 H5)", "phase": 5}
 {"id": "g030", "utterance": "chrome khol do", "expect": {"playbook": "open_app", "params": {"app": "chrome"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft"}
 {"id": "g031", "utterance": "mummy ko call karo", "expect": {"playbook": "call_contact", "params": {"contact": "mom"}}, "strata": "natural", "lang": "hi-en", "author": "claude-draft", "phase": 5}
