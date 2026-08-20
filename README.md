@@ -2,7 +2,7 @@
 
 Personal AI operating assistant — voice-first, playbook-driven, and structurally incapable of claiming an outcome it hasn't verified.
 
-**Status:** specification complete (v1.1), Phase 0 starting. No runtime code yet.
+**Status:** Phases 0 and 1 complete and running. 12 capabilities, 9 CI gates, ~285 tests.
 **Runtime target:** dedicated lab laptop — Intel Core Ultra 7 · RTX 5060 8 GB · 24 GB RAM · Windows 11.
 **Development host:** the `d:\my` workspace machine (where the managed projects live).
 
@@ -10,6 +10,7 @@ Personal AI operating assistant — voice-first, playbook-driven, and structural
 
 | | |
 |---|---|
+| **Use it today** | [docs/USING-IT.md](docs/USING-IT.md) — it runs on this machine now |
 | **The authoritative spec** | [docs/16-architecture-and-implementation-plan.md](docs/16-architecture-and-implementation-plan.md) (v1.1) |
 | Its red-team review (governs on conflict) | [docs/17-plan-review-v1.1.md](docs/17-plan-review-v1.1.md) |
 | Orientation / summary | [docs/00-SUMMARY.md](docs/00-SUMMARY.md) |
