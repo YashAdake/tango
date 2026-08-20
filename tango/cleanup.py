@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from tango.adapters.system import _running_pids
+from tango.adapters.system import ProcessTableUnavailable, _running_pids
 from tango.ledger import Ledger
 from tango.store import Store
 from tango.types import ActionStatus
@@ -53,7 +53,12 @@ def started_processes(store: Store, *, only_alive: bool = True) -> list[StartedP
         (ActionStatus.VERIFIED,),
     ).fetchall()
 
-    live = _running_pids()
+    try:
+        live = _running_pids()
+    except ProcessTableUnavailable:
+        # Cannot tell what is alive. Reporting an empty list would read as
+        # "nothing is running", which is a claim rather than an absence.
+        raise
     found: list[StartedProcess] = []
     seen: set[int] = set()
 
@@ -83,12 +88,28 @@ def started_processes(store: Store, *, only_alive: bool = True) -> list[StartedP
     return found
 
 
+def processes_for(store: Store, project_path: str) -> list[StartedProcess]:
+    """Live processes Tango started inside a project's directory.
+
+    Matched on the recorded working directory, because that is what the ledger
+    actually knows — not on a guess about which command belongs to what.
+    """
+    wanted = project_path.replace("\\", "/").rstrip("/").lower()
+    found = []
+    for proc in started_processes(store):
+        cwd = proc.args.get("cwd", "").replace("\\", "/").rstrip("/").lower()
+        if cwd and (cwd == wanted or cwd.startswith(f"{wanted}/")):
+            found.append(proc)
+    return found
+
+
 def stop_all(
     store: Store,
     ledger: Ledger,
     executor: object,
     *,
     pids: list[int] | None = None,
+    project_path: str | None = None,
 ) -> list[tuple[StartedProcess, ActionStatus]]:
     """Stop tracked processes, each through the ledger like any other action.
 
@@ -97,7 +118,8 @@ def stop_all(
     """
     from tango.tools import ToolCall
 
-    targets = [p for p in started_processes(store) if pids is None or p.pid in pids]
+    pool = processes_for(store, project_path) if project_path else started_processes(store)
+    targets = [p for p in pool if pids is None or p.pid in pids]
     if not targets:
         return []
 

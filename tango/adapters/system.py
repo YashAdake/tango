@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,22 +37,98 @@ class ProcessTableUnavailable(RuntimeError):
     """
 
 
-def _tasklist() -> list[list[str]]:
-    """Raw process table rows, or an explicit failure.
+# One command can ask for the process table ten times — once per verifier,
+# once per cleanup candidate. Each call spawns a process, and under that load
+# tasklist starts timing out, which is how a correct system produced
+# UNVERIFIABLE for something it could plainly see. Cached briefly instead.
+_CACHE_TTL = 1.0
+_cache: tuple[float, list[list[str]]] | None = None
 
-    Under load ``tasklist`` can time out. Letting that propagate as a bare
-    TimeoutExpired crashed `tango running` and `tango stop`; treating it as an
-    empty result would have been worse, because it reads as "nothing running".
+
+def invalidate_process_cache() -> None:
+    """Drop the cached table.
+
+    Called after anything that changes what is running. A verifier asking
+    "did it stop?" must never be answered from a snapshot taken before the
+    stop — that would turn verification into an echo.
     """
+    global _cache
+    _cache = None
+
+
+def _snapshot_win32() -> list[list[str]]:
+    """Read the process table through the Windows API.
+
+    ``tasklist`` was measured at **4.5 seconds** on a loaded machine — it spawns
+    a process and formats CSV to answer a question the kernel can answer in
+    microseconds. That single subprocess was the slowest thing in the system,
+    and the source of the timeouts that made verifiers report UNVERIFIABLE for
+    processes they could plainly see.
+    """
+    import ctypes
+    import ctypes.wintypes as wt
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wt.DWORD), ("cntUsage", wt.DWORD),
+            ("th32ProcessID", wt.DWORD), ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+            ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wt.DWORD), ("szExeFile", ctypes.c_char * 260),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == INVALID_HANDLE:
+        raise ProcessTableUnavailable("CreateToolhelp32Snapshot failed")
+
+    entry = PROCESSENTRY32()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+    rows: list[list[str]] = []
+    try:
+        if not kernel32.Process32First(snapshot, ctypes.byref(entry)):
+            raise ProcessTableUnavailable("Process32First failed")
+        while True:
+            name = entry.szExeFile.decode("utf-8", errors="replace")
+            rows.append([name, str(entry.th32ProcessID)])
+            if not kernel32.Process32Next(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return rows
+
+
+def _tasklist_fallback() -> list[list[str]]:
+    """Subprocess fallback, for when the API call is unavailable."""
     try:
         out = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15
+            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=20
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ProcessTableUnavailable(f"could not read the process table: {exc}") from exc
     if out.returncode != 0:
         raise ProcessTableUnavailable(f"tasklist exited {out.returncode}")
     return [[p.strip('"') for p in line.split('","')] for line in out.stdout.splitlines()]
+
+
+def _tasklist() -> list[list[str]]:
+    """Process table rows as ``[image_name, pid]``, or an explicit failure.
+
+    Never an empty list on error: "nothing is running" is a claim, and an
+    unreadable table is an absence of one.
+    """
+    global _cache
+    if _cache is not None and (time.monotonic() - _cache[0]) < _CACHE_TTL:
+        return _cache[1]
+    try:
+        rows = _snapshot_win32()
+    except (ProcessTableUnavailable, AttributeError, OSError):
+        rows = _tasklist_fallback()
+    _cache = (time.monotonic(), rows)
+    return rows
 
 
 def _running_pids() -> set[int]:
@@ -100,6 +177,7 @@ def process_start(cmd: str, cwd: str | None = None) -> ToolResult:
         proc = _spawn(cmd, cwd)
     except OSError as exc:
         return ToolResult(ok=False, summary=f"could not start '{cmd}': {exc}")
+    invalidate_process_cache()
     return ToolResult(
         ok=True, provider_ref=str(proc.pid), raw=f"pid={proc.pid}", summary=f"started {cmd}"
     )
@@ -147,6 +225,7 @@ def process_stop(pid: int) -> ToolResult:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return ToolResult(ok=False, provider_ref=str(pid), summary=f"taskkill failed: {exc}")
+    invalidate_process_cache()
     # Success is decided by the verifier looking at the process table, not by
     # taskkill's exit code — it reports success for a pid that was already gone.
     return ToolResult(ok=True, provider_ref=str(pid), summary=f"asked {pid} to stop")
@@ -193,4 +272,5 @@ def app_launch(app: str, path: str | None = None) -> ToolResult:
         subprocess.Popen(cmd, shell=True)
     except OSError as exc:
         return ToolResult(ok=False, provider_ref=exe, summary=f"could not launch {app}: {exc}")
+    invalidate_process_cache()
     return ToolResult(ok=True, provider_ref=exe, summary=f"launched {app}")

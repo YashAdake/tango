@@ -133,8 +133,14 @@ def uncommitted_sweep(projects: ProjectRegistry, params: dict[str, Any]) -> Aggr
 
     Reports unpushed commits as well as uncommitted files: a commit that exists
     only on this machine is just as lost if the disk dies."""
+    wanted = params.get("project")
+    candidates = [
+        p for p in sorted(projects.projects.values(), key=lambda p: p.id)
+        if not wanted or wanted == "*" or p.id == wanted
+    ]
+
     rows: list[dict[str, Any]] = []
-    for project in sorted(projects.projects.values(), key=lambda p: p.id):
+    for project in candidates:
         result = git_state(path=project.path)
         if not result.raw or result.raw == "{}":
             continue
@@ -143,7 +149,8 @@ def uncommitted_sweep(projects: ProjectRegistry, params: dict[str, Any]) -> Aggr
             rows.append({"id": project.id, **data})
 
     if not rows:
-        return AggregateResult("Everything is committed and pushed.",
+        scope = f" in {wanted}" if wanted and wanted != "*" else ""
+        return AggregateResult(f"Everything is committed and pushed{scope}.",
                                {"repos": []}, "all clean")
 
     files = sum(r.get("dirty", 0) for r in rows)

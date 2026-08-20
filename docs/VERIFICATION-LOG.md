@@ -742,3 +742,87 @@ not per call, and that the deterministic path never reaches for a model at all
 3. `resource_lock` remains an unused table — build it or delete it.
 4. `status.py` and `diagnose.py` both probe health; not duplication yet, but one more probe and it is.
 5. `import tango.cli` costs 1.16s (Typer, Pydantic). Fine for a CLI, fatal for the sub-second voice path — Phase 2 needs a resident process.
+
+---
+
+## V10 — Conversation memory, and the subprocess that cost 4.5 seconds
+
+**Date:** 2026-08-20 · **Verdict:** PASS after 5 fixes · **Gate:** 10/10 green
+
+### What landed
+
+`tango/session.py` — persisted conversation state. **Persisted, because every
+CLI invocation is a new process**: memory held in RAM would be born empty every
+time, so "conversation memory" would silently mean "no memory". Same class of
+defect as an undo window that only exists until the process exits.
+
+The loop now works across separate processes:
+
+```
+$ tango do start myjson      →  Dev server · Editor
+$ tango do kill it           →  npm run dev in myjson (pid 12424)
+$ tango running              →  Nothing that I started is still running.
+```
+
+Sticky trust labels ride along: a session that has read untrusted content stays
+untrusted for its remaining turns, or *"read this page"* followed by *"now email
+Rahul"* launders the first turn through the second.
+
+### Defects found
+
+**D26 · "Kill it" said "Nothing to do" while the server kept running.** `dev_down`
+had only a compose step; myjson has no compose, so the guard skipped it and the
+playbook truthfully reported zero steps — while the dev server it was asked to
+stop carried on. Technically correct, and a false claim about the world.
+
+*Fix:* stopping a project now stops its containers **and** the processes Tango
+started in its directory, matched on the recorded working directory because that
+is what the ledger actually knows.
+
+**D27 · `uncommitted_sweep` ignored its project scope.** Context correctly
+narrowed to myjson; the aggregate swept every repo anyway. A different question,
+confidently answered.
+
+**D28 · `ProcessTableUnavailable` crashed the CLI.** The V9 fix taught verifiers
+to handle it and stopped there — `cleanup.py` and the CLI still let it escape as
+a traceback. Now reported as a state.
+
+**D29 · Context referents arrived in the wrong shape.** Resolving "it" produced
+`project` as a string but not the `_project` object a named project produces, so
+the playbook rejected it. A referent from context must arrive downstream exactly
+as a named one does, or every consumer needs two code paths.
+
+**D30 · `tasklist` was the slowest thing in the system — 4.5 seconds.**
+
+The new latency gate caught `tango running` at 6.5s against a 4s budget. It
+would have been easy to raise the budget. Measuring instead found that **bare
+`tasklist` took 4.49s on a loaded machine**: spawning a process and formatting
+CSV to answer something the kernel knows in microseconds.
+
+That single subprocess was also the cause of D24's timeouts — the reason
+verifiers reported `UNVERIFIABLE` for processes they could plainly see.
+
+*Fix:* read the process table through `CreateToolhelp32Snapshot` directly, with
+the subprocess kept only as a fallback. Plus a 1-second cache with **explicit
+invalidation** after anything that changes what is running — a verifier asking
+"did it stop?" must never be answered from a snapshot taken before the stop.
+
+| | before | after |
+|---|---|---|
+| process table read | **4,490 ms** | **40 ms** |
+| `tango running` | 6.51 s | **1.58 s** |
+
+### The gate earned its place immediately
+
+It was added yesterday because D22 had survived a week unmeasured. Within one
+session it caught a real regression and — because I measured rather than
+adjusted the threshold — that regression turned out to be a 110× inefficiency
+that had been there since the first adapter was written.
+
+**A gate you tune to pass is a gate you have deleted.**
+
+### Known gaps
+
+- Session state is per-surface; cross-surface continuity (start on CLI, continue on phone) is Phase 5.
+- `end()` exists but nothing calls it — "thanks Tango" as an explicit session close is Phase 3.
+- Placeholder resolution covers `@running`, `@last_api`, `@last_failure`, `@last_deployed`; the deferred golden rows can be re-enabled once each has a real referent path.

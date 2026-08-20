@@ -21,6 +21,7 @@ from tango.playbook import PlaybookRegistry, run_playbook
 from tango.projects import ProjectRegistry
 from tango.render import StepOutcome, false_success_signal, render_task
 from tango.router import Route, Router
+from tango.session import SessionStore, resolve_placeholders
 from tango.store import Store
 from tango.types import ActionStatus, PrivacyClass, Risk, TaskStatus, VerifyStatus
 
@@ -51,6 +52,7 @@ class Core:
         self.playbooks = PlaybookRegistry()
         self.playbooks.load_dir(playbooks)
         self.projects = ProjectRegistry.load(hosts)
+        self.sessions = SessionStore(self.store)
 
         from tango.models import select_model
 
@@ -101,11 +103,14 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
     """Run an utterance: tango do start optiresume"""
     core = _core(ctx)
     text = " ".join(utterance)
-    decision = core.router.route(text)
+    session = core.sessions.current("cli")
+    decision = core.router.route(text, context=session.as_context())
+    decision.params = resolve_placeholders(decision.params, session.as_context())
 
     if decision.route is Route.REFUSE:
         typer.secho(decision.message, fg=typer.colors.RED)
         core.store.audit("cli", f"refuse:{decision.reason}", "DENIED", detail=text)
+        core.sessions.record(session, utterance=text, status="REFUSED")
         raise typer.Exit(2)
 
     if decision.route is Route.DECLINE:
@@ -134,6 +139,16 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
             decision.playbook_id, core.projects, agg_params, core.ledger, core.executor
         )
         typer.echo(result.text)
+        core.sessions.record(
+            session, utterance=text, playbook=decision.playbook_id,
+            project=agg_params.get("project") if agg_params.get("project") != "*" else None,
+            target=str(agg_params.get("target")) if agg_params.get("target") else None,
+            status="OK",
+        )
+        return
+
+    if decision.playbook_id == "dev_down":
+        _stop_project(ctx, core, session, text, decision)
         return
 
     pb = core.playbooks.get(decision.playbook_id)
@@ -155,6 +170,10 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
     run = run_playbook(pb, params, task_id, core.executor)
 
     typer.echo(render_task(run.steps, run.status))
+    core.sessions.record(
+        session, utterance=text, playbook=pb.id,
+        project=params.get("project"), task_id=task_id, status=str(run.status),
+    )
 
     signal = false_success_signal(
         " ".join(s.label for s in run.steps), [s.status for s in run.steps]
@@ -163,6 +182,54 @@ def do(ctx: typer.Context, utterance: list[str]) -> None:
         typer.secho(f"[tripwire {signal:.2f}] response reviewed", fg=typer.colors.MAGENTA)
     if run.aborted_at:
         typer.secho(f"(stopped after '{run.aborted_at}')", fg=typer.colors.YELLOW)
+
+
+def _stop_project(ctx: typer.Context, core: Core, session: Any, text: str, decision: Any) -> None:
+    """Stop a project: its containers, and the processes Tango started for it.
+
+    Both halves matter. Containers alone leaves the dev server running while
+    reporting success, which is a false claim about the world — and a playbook
+    with every step guarded off would otherwise report "Nothing to do".
+    """
+    from tango.cleanup import stop_all
+
+    project = decision.params.get("_project")
+    steps: list[StepOutcome] = []
+
+    if project is not None and project.compose_path:
+        pb = core.playbooks.get("dev_down")
+        params = dict(decision.params)
+        params["has_compose"] = True
+        task_id = core.executor.new_task(
+            goal=text, surface="cli", playbook_id=pb.id, playbook_version=pb.version,
+            privacy_class=PrivacyClass.LOCAL_ONLY,
+        )
+        steps.extend(run_playbook(pb, params, task_id, core.executor).steps)
+
+    if project is not None:
+        try:
+            results = stop_all(core.store, core.ledger, core.executor,
+                               project_path=project.path)
+        except Exception as exc:
+            typer.secho(f"I can't read the process table right now — {exc}",
+                        fg=typer.colors.YELLOW)
+            raise typer.Exit(1) from exc
+        steps.extend(
+            StepOutcome(label=proc.label, status=status) for proc, status in results
+        )
+
+    if not steps:
+        typer.echo(f"Nothing of {project.id if project else 'that'} was running.")
+        core.sessions.record(session, utterance=text, playbook="dev_down",
+                             project=getattr(project, "id", None), status="NOOP")
+        return
+
+    status = (TaskStatus.COMPLETED
+              if all(s.status is ActionStatus.VERIFIED for s in steps)
+              else TaskStatus.PARTIAL)
+    typer.echo(render_task(steps, status))
+    core.sessions.record(session, utterance=text, playbook="dev_down",
+                         project=getattr(project, "id", None), status=str(status))
 
 
 @app.command()
@@ -213,7 +280,12 @@ def running(ctx: typer.Context) -> None:
     from tango.cleanup import started_processes
 
     core = _core(ctx)
-    procs = started_processes(core.store)
+    try:
+        procs = started_processes(core.store)
+    except Exception as exc:
+        typer.secho(f"I can't read the process table right now — {exc}",
+                    fg=typer.colors.YELLOW)
+        raise typer.Exit(1) from exc
     if not procs:
         typer.echo("Nothing that I started is still running.")
         return
@@ -230,7 +302,13 @@ def stop(
     from tango.cleanup import stop_all
 
     core = _core(ctx)
-    results = stop_all(core.store, core.ledger, core.executor, pids=list(pid) if pid else None)
+    try:
+        results = stop_all(core.store, core.ledger, core.executor,
+                           pids=list(pid) if pid else None)
+    except Exception as exc:
+        typer.secho(f"I can't read the process table right now — {exc}",
+                    fg=typer.colors.YELLOW)
+        raise typer.Exit(1) from exc
     if not results:
         typer.echo("Nothing that I started is still running.")
         return

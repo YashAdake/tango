@@ -256,8 +256,20 @@ class Router:
             prior = _prior_project(context)
             if prior:
                 pb = "dev_down" if verb in ("stop", "kill") else "dev_up"
-                return Decision(Route.PLAYBOOK, playbook_id=pb, params={"project": prior},
-                                confidence=0.7)
+                # A referent from context still goes through the resolver: it
+                # must arrive downstream in exactly the shape a named project
+                # does, or every consumer needs two code paths.
+                try:
+                    project = self.projects.resolve(prior)
+                except (AmbiguousResolution, ResolutionError):
+                    return Decision(Route.CLARIFY, reason="ambiguous_project",
+                                    message=f"{verb.capitalize()} which project?",
+                                    candidates=self.projects.ids())
+                return Decision(
+                    Route.PLAYBOOK, playbook_id=pb,
+                    params={"project": project.id, "_project": project},
+                    confidence=0.7,
+                )
             return Decision(Route.CLARIFY, reason="ambiguous_project",
                             message=f"{verb.capitalize()} which project?",
                             candidates=self.projects.ids())
