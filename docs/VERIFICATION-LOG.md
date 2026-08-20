@@ -596,7 +596,14 @@ silent expiry is how users learn a system cannot be trusted to remember.
 ## V8 — Diagnosis: the evidence half
 
 **Date:** 2026-08-19 · **Verdict:** PASS after 3 fixes · **Gate:** 9/9 green
-**Routing: 46/46 (100%) measurable — up from 44. Hinglish 8/8. Deferred 17 → 13.**
+**Routing: 45/45 (100%) measurable — up from 44. Hinglish 7/7. Deferred 17 → 16.**
+
+> *Correction:* this entry first read "46/46, Hinglish 8/8". The measured
+> figure at the time was **45/46** — one row (`g043` bare "why") was still
+> missing, and the gate passed on 98% rather than 100%. Deferring that row
+> to Phase 3 is what makes 45/45 true. A log whose numbers drift is worse
+> than no log, so the original figure is left visible rather than quietly
+> overwritten.
 
 ### The split, and why it is the whole design
 
