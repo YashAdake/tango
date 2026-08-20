@@ -826,3 +826,73 @@ that had been there since the first adapter was written.
 - Session state is per-surface; cross-surface continuity (start on CLI, continue on phone) is Phase 5.
 - `end()` exists but nothing calls it — "thanks Tango" as an explicit session close is Phase 3.
 - Placeholder resolution covers `@running`, `@last_api`, `@last_failure`, `@last_deployed`; the deferred golden rows can be re-enabled once each has a real referent path.
+
+---
+
+## V11 — The compose path, tested against reality for the first time
+
+**Date:** 2026-08-20 · **Verdict:** PASS after 1 fix · **Gate:** 10/10 green
+
+Docker Desktop came up on this machine, closing a gap flagged in five previous
+entries: `docker.compose_up` had never once run for real.
+
+### D31 · "Still starting" was reported as "failed"
+
+`tango do start optiresume` brought up Postgres and reported:
+
+```
+Database — failed: optiresume-dev-db did not become healthy: status=running health=starting
+```
+
+The container had not failed. Its logs read *"database system shutdown was
+interrupted; last known up at 2026-06-05"* — it was replaying a June crash, and
+spent **40 seconds on a data-directory fsync**. Docker's healthcheck exhausted
+its 10 retries during that recovery. Tango's verifier hit its own 45-second
+timeout and called it `REFUTED`.
+
+**`REFUTED` and `UNVERIFIABLE` are different claims, and the difference is what
+you do next.** REFUTED means *I checked, it is not up* — go read logs.
+UNVERIFIABLE means *I stopped watching before it settled* — wait. Reporting the
+first when the second is true would have sent the owner debugging a database
+that was merely slow.
+
+*Fix:* three explicit outcomes.
+
+| Container state | Verdict | Why |
+|---|---|---|
+| running, healthy (or no healthcheck) | `VERIFIED` | it is up |
+| exited | `REFUTED` | + last log lines as evidence |
+| health `unhealthy` — retries exhausted | `REFUTED` | a real verdict, + logs |
+| health `starting` at timeout | **`UNVERIFIABLE`** | nothing is known to be wrong |
+| never appeared | `REFUTED` | + absence recorded |
+
+Default wait raised 45s → 90s: waiting longer costs patience, giving up early
+costs a false verdict. Failure verdicts now carry the container's own logs,
+because a verdict without them is an assertion rather than evidence.
+
+### What this validates
+
+The end-to-end path works: compose file resolved (`docker-compose.dev.yml`, not
+the default), correct container targeted (`optiresume-dev-db`), `on_fail: abort`
+stopped the run rather than starting an API against a dead database, and the
+sentence carried the real state.
+
+And diagnosis, run against the same container moments later, reports:
+
+```
+ ! optiresume-dev-db is running but unhealthy
+ ! health endpoint unreachable: ... actively refused it
+   logs show fatal error
+   port 8000 is free — nothing is listening
+```
+
+Every line true, ranked, with the strongest first.
+
+### Does Tango need Docker?
+
+Measured, not assumed: **one of five projects** has a compose step. myjson,
+airdraw, filesflow and portfolio start, stop and diagnose with Docker absent,
+and `status` says *"Docker is not running — container state unknown, not assumed
+empty"* rather than implying nothing is up.
+
+Docker is required for optiresume's local database. Nothing else.

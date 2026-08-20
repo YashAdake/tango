@@ -39,36 +39,80 @@ def _inspect(name: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def container_healthy(name: str, timeout_s: float = 45.0) -> VerifyResult:
-    """Wait for a container to be running and, if it declares a healthcheck,
-    healthy. A container that is 'running' but failing its healthcheck is not
-    up, and reporting it as up is exactly the lie the ledger exists to prevent.
+def _tail(name: str, lines: int = 6) -> str:
+    """Last few log lines, so a failure carries its own explanation."""
+    try:
+        p = subprocess.run(["docker", "logs", "--tail", str(lines), name],
+                           capture_output=True, text=True, timeout=20,
+                           encoding="utf-8", errors="replace")
+        return (p.stdout + p.stderr).strip()[:1200]
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+def container_healthy(name: str, timeout_s: float = 90.0) -> VerifyResult:
+    """Wait for a container to be running and, where declared, healthy.
+
+    Three outcomes, and the distinction between the last two is the point:
+
+    * **VERIFIED** — running, and healthy if it says so.
+    * **REFUTED** — it exited, or its healthcheck ran out of retries. Something
+      is wrong and there are logs to read.
+    * **UNVERIFIABLE** — still *starting* when we stopped watching. Nothing is
+      known to be wrong; we ran out of patience.
+
+    That third case used to report REFUTED, which is a different claim
+    entirely — it would send you debugging a database that was merely slow.
+    Found the first time this ran against a real Postgres recovering from an
+    unclean shutdown: a 40-second fsync, perfectly healthy, reported as failed.
     """
     deadline = time.monotonic() + timeout_s
-    last = "not found"
+    last_status = last_health = None
     while time.monotonic() < deadline:
         state = _inspect(name)
         if state is None:
-            last = "container not found"
-        else:
-            status = state.get("Status", "unknown")
-            health = (state.get("Health") or {}).get("Status")
-            if status == "running" and health in (None, "healthy"):
-                return VerifyResult(
-                    VerifyStatus.VERIFIED,
-                    [Evidence("container_state", json.dumps({"status": status, "health": health}))],
-                    f"{name} is {status}" + (f" and {health}" if health else ""),
-                )
-            if status == "exited":
-                return VerifyResult(
-                    VerifyStatus.REFUTED,
-                    [Evidence("container_state", json.dumps(state))],
-                    f"{name} exited (code {state.get('ExitCode')})",
-                )
-            last = f"status={status} health={health}"
+            last_status, last_health = "absent", None
+            time.sleep(1.0)
+            continue
+
+        status = state.get("Status", "unknown")
+        health = (state.get("Health") or {}).get("Status")
+        last_status, last_health = status, health
+
+        if status == "running" and health in (None, "healthy"):
+            return VerifyResult(
+                VerifyStatus.VERIFIED,
+                [Evidence("container_state", json.dumps({"status": status, "health": health}))],
+                f"{name} is {status}" + (f" and {health}" if health else ""),
+            )
+        if status == "exited":
+            return VerifyResult(
+                VerifyStatus.REFUTED,
+                [Evidence("container_state", json.dumps(state)),
+                 Evidence("logs", _tail(name))],
+                f"{name} exited (code {state.get('ExitCode')})",
+            )
+        if health == "unhealthy":
+            # Docker exhausted its retries. That is a real verdict, not
+            # impatience — but the logs are what make it actionable.
+            return VerifyResult(
+                VerifyStatus.REFUTED,
+                [Evidence("container_state", json.dumps(state)),
+                 Evidence("logs", _tail(name))],
+                f"{name} is running but failing its healthcheck",
+            )
         time.sleep(1.0)
+
+    if last_status == "absent":
+        return VerifyResult(
+            VerifyStatus.REFUTED, [Evidence("container_absent", name)],
+            f"{name} never appeared",
+        )
     return VerifyResult(
-        VerifyStatus.REFUTED, [Evidence("timeout", last)], f"{name} did not become healthy: {last}"
+        VerifyStatus.UNVERIFIABLE,
+        [Evidence("timeout", f"status={last_status} health={last_health}"),
+         Evidence("logs", _tail(name))],
+        f"{name} was still starting after {timeout_s:.0f}s — it may yet come up",
     )
 
 
@@ -81,7 +125,10 @@ def verify_compose_up(result: ToolResult, args: dict[str, Any]) -> VerifyResult:
         return VerifyResult(
             VerifyStatus.UNVERIFIABLE, [], "no container name given to verify against"
         )
-    return container_healthy(container, timeout_s=float(args.get("timeout_s", 45)))
+    # 90s, not 45: a Postgres recovering from an unclean shutdown spent 40s
+    # on fsync alone. Waiting longer costs patience; giving up early costs a
+    # false verdict.
+    return container_healthy(container, timeout_s=float(args.get("timeout_s", 90)))
 
 
 @REGISTRY.tool(

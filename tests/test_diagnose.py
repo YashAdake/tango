@@ -178,3 +178,58 @@ def test_findings_carry_their_evidence_forward():
     f = Finding("log", "logs show timeout", 2, evidence="upstream timed out after 30s")
     assert "30s" in f.evidence
     assert str(f) == "logs show timeout"
+
+
+# ------------------------------------ container health semantics (V11 / D31)
+
+
+def test_still_starting_is_unverifiable_not_refuted(monkeypatch):
+    """"Still coming up" and "it failed" are different claims. Conflating them
+    sends you debugging a database that is merely slow — found against a real
+    Postgres doing a 40-second fsync after an unclean shutdown."""
+    from tango.adapters import docker as dk
+
+    monkeypatch.setattr(dk, "_inspect",
+                        lambda name: {"Status": "running", "Health": {"Status": "starting"}})
+    monkeypatch.setattr(dk, "_tail", lambda name, lines=6: "still starting up")
+
+    result = dk.container_healthy("slow-db", timeout_s=0.5)
+    assert result.status.value == "UNVERIFIABLE"
+    assert "may yet come up" in result.detail
+
+
+def test_exhausted_retries_is_refuted_with_logs(monkeypatch):
+    from tango.adapters import docker as dk
+
+    monkeypatch.setattr(dk, "_inspect",
+                        lambda name: {"Status": "running", "Health": {"Status": "unhealthy"}})
+    monkeypatch.setattr(dk, "_tail", lambda name, lines=6: "FATAL: password authentication failed")
+
+    result = dk.container_healthy("bad-db", timeout_s=5)
+    assert result.status.value == "REFUTED"
+    assert any("authentication" in e.payload for e in result.evidence), (
+        "a failure verdict without its logs is an assertion, not evidence"
+    )
+
+
+def test_exited_is_refuted(monkeypatch):
+    from tango.adapters import docker as dk
+
+    monkeypatch.setattr(dk, "_inspect", lambda name: {"Status": "exited", "ExitCode": 1})
+    monkeypatch.setattr(dk, "_tail", lambda name, lines=6: "boom")
+    assert dk.container_healthy("dead", timeout_s=5).status.value == "REFUTED"
+
+
+def test_healthy_is_verified(monkeypatch):
+    from tango.adapters import docker as dk
+
+    monkeypatch.setattr(dk, "_inspect",
+                        lambda name: {"Status": "running", "Health": {"Status": "healthy"}})
+    assert dk.container_healthy("good", timeout_s=5).status.value == "VERIFIED"
+
+
+def test_a_container_with_no_healthcheck_counts_as_up(monkeypatch):
+    from tango.adapters import docker as dk
+
+    monkeypatch.setattr(dk, "_inspect", lambda name: {"Status": "running"})
+    assert dk.container_healthy("plain", timeout_s=5).status.value == "VERIFIED"
