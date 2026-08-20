@@ -54,11 +54,13 @@ class Core:
 
         from tango.models import select_model
 
+        # Handed over unprobed: the router calls available() only when every
+        # rule has missed, so commands that never need a model never wait.
         self.model = select_model()
         self.router = Router(
             self.projects,
             known_playbooks=built_capabilities(set(self.playbooks.names())),
-            model=self.model if self.model.available() else None,
+            model=self.model,
         )
 
     def recover(self) -> list[tuple[str, ActionStatus]]:

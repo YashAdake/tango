@@ -27,29 +27,42 @@ KNOWN_APPS: dict[str, str] = {
 }
 
 
+class ProcessTableUnavailable(RuntimeError):
+    """The OS could not be asked what is running.
+
+    Distinct from "nothing is running", and the distinction matters: an empty
+    process table would make every verifier report REFUTED and every cleanup
+    report nothing to do. Not knowing is its own answer.
+    """
+
+
+def _tasklist() -> list[list[str]]:
+    """Raw process table rows, or an explicit failure.
+
+    Under load ``tasklist`` can time out. Letting that propagate as a bare
+    TimeoutExpired crashed `tango running` and `tango stop`; treating it as an
+    empty result would have been worse, because it reads as "nothing running".
+    """
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProcessTableUnavailable(f"could not read the process table: {exc}") from exc
+    if out.returncode != 0:
+        raise ProcessTableUnavailable(f"tasklist exited {out.returncode}")
+    return [[p.strip('"') for p in line.split('","')] for line in out.stdout.splitlines()]
+
+
 def _running_pids() -> set[int]:
     """Snapshot of live PIDs, straight from the OS."""
-    out = subprocess.run(
-        ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10
-    )
-    pids: set[int] = set()
-    for line in out.stdout.splitlines():
-        parts = [p.strip('"') for p in line.split('","')]
-        if len(parts) > 1 and parts[1].isdigit():
-            pids.add(int(parts[1]))
-    return pids
+    return {
+        int(parts[1]) for parts in _tasklist() if len(parts) > 1 and parts[1].isdigit()
+    }
 
 
 def _process_names() -> set[str]:
-    out = subprocess.run(
-        ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10
-    )
-    names: set[str] = set()
-    for line in out.stdout.splitlines():
-        parts = [p.strip('"') for p in line.split('","')]
-        if parts:
-            names.add(parts[0].strip('"').lower())
-    return names
+    return {parts[0].strip('"').lower() for parts in _tasklist() if parts}
 
 
 # --------------------------------------------------------------- process.start
@@ -60,7 +73,11 @@ def verify_process_started(result: ToolResult, args: dict[str, Any]) -> VerifyRe
     if result.provider_ref is None:
         return VerifyResult(VerifyStatus.UNVERIFIABLE, [], "no pid was reported")
     pid = int(result.provider_ref)
-    if pid in _running_pids():
+    try:
+        live = _running_pids()
+    except ProcessTableUnavailable as exc:
+        return VerifyResult(VerifyStatus.UNVERIFIABLE, [], str(exc))
+    if pid in live:
         return VerifyResult(
             VerifyStatus.VERIFIED,
             [Evidence("pid", str(pid))],
@@ -79,16 +96,23 @@ def verify_process_started(result: ToolResult, args: dict[str, Any]) -> VerifyRe
     description="Start a long-running process in a working directory.",
 )
 def process_start(cmd: str, cwd: str | None = None) -> ToolResult:
-    proc = subprocess.Popen(
+    try:
+        proc = _spawn(cmd, cwd)
+    except OSError as exc:
+        return ToolResult(ok=False, summary=f"could not start '{cmd}': {exc}")
+    return ToolResult(
+        ok=True, provider_ref=str(proc.pid), raw=f"pid={proc.pid}", summary=f"started {cmd}"
+    )
+
+
+def _spawn(cmd: str, cwd: str | None) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
         cmd,
         cwd=cwd,
         shell=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-    )
-    return ToolResult(
-        ok=True, provider_ref=str(proc.pid), raw=f"pid={proc.pid}", summary=f"started {cmd}"
     )
 
 
@@ -97,7 +121,11 @@ def process_start(cmd: str, cwd: str | None = None) -> ToolResult:
 
 def verify_process_stopped(result: ToolResult, args: dict[str, Any]) -> VerifyResult:
     pid = int(args.get("pid", result.provider_ref or 0))
-    if pid not in _running_pids():
+    try:
+        live = _running_pids()
+    except ProcessTableUnavailable as exc:
+        return VerifyResult(VerifyStatus.UNVERIFIABLE, [], str(exc))
+    if pid not in live:
         return VerifyResult(
             VerifyStatus.VERIFIED, [Evidence("pid_absent", str(pid))], f"process {pid} is gone"
         )
@@ -113,8 +141,15 @@ def verify_process_stopped(result: ToolResult, args: dict[str, Any]) -> VerifyRe
     description="Terminate a process by pid. no-compensate: stopping is itself the undo.",
 )
 def process_stop(pid: int) -> ToolResult:
-    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10)
-    return ToolResult(ok=True, provider_ref=str(pid), summary=f"stopped {pid}")
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return ToolResult(ok=False, provider_ref=str(pid), summary=f"taskkill failed: {exc}")
+    # Success is decided by the verifier looking at the process table, not by
+    # taskkill's exit code — it reports success for a pid that was already gone.
+    return ToolResult(ok=True, provider_ref=str(pid), summary=f"asked {pid} to stop")
 
 
 # ------------------------------------------------------------------ app.launch
@@ -126,7 +161,10 @@ def verify_app_launched(result: ToolResult, args: dict[str, Any]) -> VerifyResul
     app = args.get("app", "")
     exe = KNOWN_APPS.get(app, app)
     stem = Path(exe).stem.lower()
-    names = _process_names()
+    try:
+        names = _process_names()
+    except ProcessTableUnavailable as exc:
+        return VerifyResult(VerifyStatus.UNVERIFIABLE, [], str(exc))
     hit = next((n for n in names if n.startswith(stem)), None)
     if hit:
         return VerifyResult(
@@ -151,5 +189,8 @@ def app_launch(app: str, path: str | None = None) -> ToolResult:
     if shutil.which(exe) is None:
         return ToolResult(ok=False, summary=f"'{exe}' was not found on PATH")
     cmd = [exe] + ([path] if path else [])
-    subprocess.Popen(cmd, shell=True)
+    try:
+        subprocess.Popen(cmd, shell=True)
+    except OSError as exc:
+        return ToolResult(ok=False, provider_ref=exe, summary=f"could not launch {app}: {exc}")
     return ToolResult(ok=True, provider_ref=exe, summary=f"launched {app}")

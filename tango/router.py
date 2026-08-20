@@ -345,6 +345,17 @@ class Router:
                 candidates=sorted(self.known),
             )
 
+        # Only now does anything touch the network. A model configured but
+        # unreachable is a different answer from no model at all, and the
+        # user is owed the distinction — it tells them what to go and fix.
+        if not self.model.available():
+            return Decision(
+                Route.CLARIFY, reason="no_match_model_offline",
+                message="I don't have a playbook for that, and the local model "
+                        "isn't running.",
+                candidates=sorted(self.known),
+            )
+
         from tango.models import ROUTE_SCHEMA, ROUTE_SYSTEM, ModelUnavailable, build_route_prompt
 
         try:

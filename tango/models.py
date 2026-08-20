@@ -22,7 +22,9 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-DEFAULT_HOST = os.environ.get("TANGO_OLLAMA", "http://localhost:11434")
+# 127.0.0.1, not "localhost": on Windows the name resolves to ::1 first, and
+# the IPv6 attempt has to fail before IPv4 is tried — doubling every probe.
+DEFAULT_HOST = os.environ.get("TANGO_OLLAMA", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("TANGO_MODEL", "qwen3:4b")
 
 # Small model, narrow job, short context. 8K not 32K: the 32K figure is
@@ -69,10 +71,24 @@ class OllamaModel:
     tier: str = "T1"
     options: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_OPTIONS))
     timeout_s: float = 30.0
+    _available: bool | None = field(default=None, repr=False)
 
     def available(self) -> bool:
+        """Is the model actually there? Cached per instance.
+
+        The probe is cheap when Ollama is running and slow when it is not,
+        which is exactly the wrong way round — so it happens once, lazily,
+        and only when a rule has already missed.
+        """
+        if self._available is None:
+            self._available = self._probe()
+        return self._available
+
+    def _probe(self) -> bool:
         try:
-            with urllib.request.urlopen(f"{self.host}/api/tags", timeout=2.0) as r:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310
+                f"{self.host}/api/tags", timeout=1.5
+            ) as r:
                 tags = json.loads(r.read().decode())
         except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError):
             return False
@@ -211,11 +227,43 @@ def build_route_prompt(utterance: str, playbooks: list[str], projects: list[str]
     )
 
 
+class LazyLocalModel:
+    """A T1 that does not exist until something needs it.
+
+    An audit found every CLI command paying ~4s to probe for Ollama — including
+    commands that never use a model. That is the architecture's own principle
+    violated at startup: deterministic first, model only as fallback. Nothing
+    here touches the network until the router has already exhausted its rules.
+    """
+
+    tier = "T1"
+
+    def __init__(self, name: str = DEFAULT_MODEL, host: str = DEFAULT_HOST) -> None:
+        self.name = name
+        self.host = host
+        self._inner: OllamaModel | None = None
+
+    def _resolve(self) -> OllamaModel:
+        if self._inner is None:
+            self._inner = OllamaModel(name=self.name, host=self.host)
+        return self._inner
+
+    def available(self) -> bool:
+        return self._resolve().available()
+
+    def complete(
+        self, prompt: str, *, system: str = "", schema: dict[str, Any] | None = None
+    ) -> Completion:
+        model = self._resolve()
+        if not model.available():
+            raise ModelUnavailable(f"{self.name} is not reachable at {self.host}")
+        return model.complete(prompt, system=system, schema=schema)
+
+
 def select_model(prefer_local: bool = True) -> Model:
-    """Pick the best available T1. Returns :class:`NullModel` when nothing is
-    reachable — the caller then degrades visibly rather than guessing."""
-    if prefer_local:
-        local = OllamaModel()
-        if local.available():
-            return local
-    return NullModel()
+    """Return the T1 handle. Deliberately does **not** probe.
+
+    Probing here would make every command pay for a model most of them never
+    use. The router asks ``available()`` only when its rules have missed.
+    """
+    return LazyLocalModel() if prefer_local else NullModel()

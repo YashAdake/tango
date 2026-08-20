@@ -682,3 +682,63 @@ different answer, so the row is deferred rather than the expectation weakened.
 - The reasoning half needs a model. `Dossier.as_prompt()` is built and tested; nothing consumes it yet.
 - No remediation playbooks — proposing a fix is Phase 4, applying one is confirm-gated.
 - Log scanning covers ten common shapes; real failures will suggest more, and each one becomes a pattern plus a test.
+
+---
+
+## V9 — Deep audit: coverage, profiling, and the defect that mattered most
+
+**Date:** 2026-08-20 · **Verdict:** PASS after 4 fixes · **Gate:** 10/10 green
+(`latency` is new). Full write-up: [AUDIT-2026-08-20.md](AUDIT-2026-08-20.md).
+
+A deliberate step back rather than another feature. Re-read the code, measured
+coverage properly, profiled the binary, and looked for what a green suite hides.
+
+### Defects found
+
+**D22 · Every command paid 4 seconds for a model most of them never use.**
+`tango projects` — which touches no model and no network — took **8.5 seconds**.
+`OllamaModel.available()` was 4.1s of it, because the CLI probed for Ollama at
+construction regardless of what the command needed, and on Windows `localhost`
+tries IPv6 first so the probe is slowest exactly when Ollama is absent.
+
+The architecture's own principle, violated at the entry point. Fixed with
+`LazyLocalModel` (nothing touches the network until the rules have missed),
+a cached probe, and `127.0.0.1` instead of `localhost`.
+
+**8.51s → 0.67s. Unit suite 151s → 29s.**
+
+**D23 · The CLI had zero tests.** 197 statements at 0%, standing between every
+guarantee underneath and the person using them. `doctor.py` likewise — and that
+one is the first thing to run on a machine I cannot debug. 20 tests added;
+cli 0→74%, doctor 0→79%, overall 66→77%.
+
+**D24 · `system.py` had no error handling.** Three subprocess calls, zero `try`
+blocks, while `inspect.py` written a day later has six — straight drift. A
+`tasklist` timeout crashed `tango running` and `tango stop`, surfacing as one
+intermittent failure under coverage, which is exactly how this class of bug
+announces itself. Fixed with `ProcessTableUnavailable`, and every verifier
+treats it as **`UNVERIFIABLE`, never `REFUTED`** — reporting "not running"
+because we could not look is the same lie in the other direction.
+
+**D25 · The offline distinction nearly vanished.** Making the model lazy briefly
+collapsed *"no playbook"* and *"no playbook and the model is offline"* into one
+answer. A test caught it. The second tells the owner what to fix.
+
+### The lesson
+
+D22 survived a week because **nothing measured latency**. The gates checked
+everything I had decided to care about and nothing I had not — and the spec has
+said since day one that latency decides whether this feels present.
+
+So `latency` is now the 10th gate: budgets on the common commands, an assertion
+that constructing a model touches no network, that availability is probed once
+not per call, and that the deterministic path never reaches for a model at all
+(enforced with a model that raises if consulted).
+
+### Known gaps, ranked
+
+1. **The golden set is still mine, not the owner's** — the largest unknown, and no further building shrinks it.
+2. Adapters at 26–45%; Docker's is untestable here with the daemon down.
+3. `resource_lock` remains an unused table — build it or delete it.
+4. `status.py` and `diagnose.py` both probe health; not duplication yet, but one more probe and it is.
+5. `import tango.cli` costs 1.16s (Typer, Pydantic). Fine for a CLI, fatal for the sub-second voice path — Phase 2 needs a resident process.

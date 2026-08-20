@@ -57,6 +57,8 @@ GATES: list[Gate] = [
          "untrusted content cannot make Tango act — refused, recorded, and visible"),
     Gate("chaos", [PY, "-m", "pytest", "tests/test_failure_injection.py", "-q"],
          "under injected failure Tango may lose capability, never honesty"),
+    Gate("latency", [PY, "-m", "pytest", "tests/test_performance.py", "-q"],
+         "a tool nobody reaches for has failed, however correct it is"),
     Gate("eval", [PY, "evals/run.py", "--all"],
          "routing accuracy against the golden set — the instrument, not a test"),
 ]
